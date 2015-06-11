@@ -717,7 +717,7 @@
         <javac fork="true"
                debug="true" debuglevel="${debuglevel}"
                destdir="${build.classes.main}" includeantruntime="false" source="${source.version}" target="${target.version}"
-               memorymaximumsize="512M">
+               memorymaximumsize="512M" encoding="UTF-8">
             <src path="${build.src.java}"/>
             <src path="${build.src.gen-java}"/>
             <classpath refid="cassandra.classpath"/>
