@@ -464,14 +464,17 @@ public class CacheService implements CacheServiceMBean
     {
         public void serialize(KeyCacheKey key, DataOutputPlus out) throws IOException
         {
-            RowIndexEntry entry = CacheService.instance.keyCache.get(key);
+            RowIndexEntry entry = CacheService.instance.keyCache.getInternal(key);
             if (entry == null)
                 return;
+
+            CFMetaData cfm = Schema.instance.getCFMetaData(key.cfId);
+            if (cfm == null)
+                return; // the table no longer exists.
+
             ByteBufferUtil.writeWithLength(key.key, out);
-            Descriptor desc = key.desc;
-            out.writeInt(desc.generation);
+            out.writeInt(key.desc.generation);
             out.writeBoolean(true);
-            CFMetaData cfm = Schema.instance.getCFMetaData(key.desc.ksname, key.desc.cfname);
             cfm.comparator.rowIndexEntrySerializer().serialize(entry, out);
         }
 

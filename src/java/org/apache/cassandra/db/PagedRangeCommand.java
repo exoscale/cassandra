@@ -31,7 +31,6 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class PagedRangeCommand extends AbstractRangeCommand
 {
@@ -73,7 +72,7 @@ public class PagedRangeCommand extends AbstractRangeCommand
                                      columnFamily,
                                      timestamp,
                                      subRange,
-                                     (SliceQueryFilter)predicate,
+                                     ((SliceQueryFilter) predicate).cloneShallow(),
                                      newStart,
                                      newStop,
                                      rowFilter,
@@ -87,7 +86,7 @@ public class PagedRangeCommand extends AbstractRangeCommand
                                      columnFamily,
                                      timestamp,
                                      keyRange,
-                                     (SliceQueryFilter)predicate,
+                                     ((SliceQueryFilter) predicate).cloneShallow(),
                                      start,
                                      stop,
                                      rowFilter,
@@ -145,9 +144,7 @@ public class PagedRangeCommand extends AbstractRangeCommand
             out.writeInt(cmd.rowFilter.size());
             for (IndexExpression expr : cmd.rowFilter)
             {
-                ByteBufferUtil.writeWithShortLength(expr.column, out);
-                out.writeInt(expr.operator.ordinal());
-                ByteBufferUtil.writeWithShortLength(expr.value, out);
+                expr.writeTo(out);;
             }
 
             out.writeInt(cmd.limit);
@@ -164,6 +161,13 @@ public class PagedRangeCommand extends AbstractRangeCommand
             AbstractBounds<RowPosition> keyRange = AbstractBounds.serializer.deserialize(in, version).toRowBounds();
 
             CFMetaData metadata = Schema.instance.getCFMetaData(keyspace, columnFamily);
+            if (metadata == null)
+            {
+                String message = String.format("Got paged range command for nonexistent table %s.%s.  If the table was just " +
+                        "created, this is likely due to the schema not being fully propagated.  Please wait for schema " +
+                        "agreement on table creation." , keyspace, columnFamily);
+                throw new UnknownColumnFamilyException(message, null);
+            }
 
             SliceQueryFilter predicate = metadata.comparator.sliceQueryFilterSerializer().deserialize(in, version);
 
@@ -174,10 +178,7 @@ public class PagedRangeCommand extends AbstractRangeCommand
             List<IndexExpression> rowFilter = new ArrayList<IndexExpression>(filterCount);
             for (int i = 0; i < filterCount; i++)
             {
-                IndexExpression expr = new IndexExpression(ByteBufferUtil.readWithShortLength(in),
-                                                           IndexExpression.Operator.findByOrdinal(in.readInt()),
-                                                           ByteBufferUtil.readWithShortLength(in));
-                rowFilter.add(expr);
+                rowFilter.add(IndexExpression.readFrom(in));
             }
 
             int limit = in.readInt();

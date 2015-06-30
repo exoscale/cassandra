@@ -30,6 +30,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.concurrent.ScheduledExecutors;
+import org.apache.cassandra.config.Config;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.QueryOptions;
@@ -37,7 +39,6 @@ import org.apache.cassandra.cql3.statements.SelectStatement;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.service.QueryState;
-import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.mindrot.jbcrypt.BCrypt;
@@ -51,8 +52,19 @@ public class PasswordAuthenticator implements ISaslAwareAuthenticator
 {
     private static final Logger logger = LoggerFactory.getLogger(PasswordAuthenticator.class);
 
-    // 2 ** GENSALT_LOG2_ROUNS rounds of hashing will be performed.
-    private static final int GENSALT_LOG2_ROUNDS = 10;
+    // 2 ** GENSALT_LOG2_ROUNDS rounds of hashing will be performed.
+    private static final String GENSALT_LOG2_ROUNDS_PROPERTY = Config.PROPERTY_PREFIX + "auth_bcrypt_gensalt_log2_rounds";
+    private static final int GENSALT_LOG2_ROUNDS = getGensaltLogRounds();
+
+    static int getGensaltLogRounds()
+    {
+        int rounds = Integer.getInteger(GENSALT_LOG2_ROUNDS_PROPERTY, 10);
+        if (rounds < 4 || rounds > 31)
+            throw new RuntimeException(new ConfigurationException(String.format("Bad value for system property -D%s. " +
+                                                                                "Please use a value 4 and 31",
+                                                                                GENSALT_LOG2_ROUNDS_PROPERTY)));
+        return rounds;
+    }
 
     // name of the hash column.
     private static final String SALTED_HASH = "salted_hash";
@@ -169,15 +181,13 @@ public class PasswordAuthenticator implements ISaslAwareAuthenticator
         // the delay is here to give the node some time to see its peers - to reduce
         // "skipped default user setup: some nodes are were not ready" log spam.
         // It's the only reason for the delay.
-        StorageService.tasks.schedule(new Runnable()
-                                      {
-                                          public void run()
-                                          {
-                                              setupDefaultUser();
-                                          }
-                                      },
-                                      Auth.SUPERUSER_SETUP_DELAY,
-                                      TimeUnit.MILLISECONDS);
+        ScheduledExecutors.nonPeriodicTasks.schedule(new Runnable()
+        {
+            public void run()
+            {
+              setupDefaultUser();
+            }
+        }, Auth.SUPERUSER_SETUP_DELAY, TimeUnit.MILLISECONDS);
 
         try
         {

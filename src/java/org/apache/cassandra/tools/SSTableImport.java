@@ -46,6 +46,7 @@ import org.apache.cassandra.io.sstable.SSTableWriter;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.codehaus.jackson.JsonFactory;
 import org.codehaus.jackson.JsonParser;
 import org.codehaus.jackson.JsonToken;
@@ -281,7 +282,7 @@ public class SSTableImport
     public int importJson(String jsonFile, String keyspace, String cf, String ssTablePath) throws IOException
     {
         ColumnFamily columnFamily = ArrayBackedSortedColumns.factory.create(keyspace, cf);
-        IPartitioner<?> partitioner = DatabaseDescriptor.getPartitioner();
+        IPartitioner partitioner = DatabaseDescriptor.getPartitioner();
 
         int importedKeys = (isSorted) ? importSorted(jsonFile, columnFamily, ssTablePath, partitioner)
                                       : importUnsorted(jsonFile, columnFamily, ssTablePath, partitioner);
@@ -292,7 +293,7 @@ public class SSTableImport
         return importedKeys;
     }
 
-    private int importUnsorted(String jsonFile, ColumnFamily columnFamily, String ssTablePath, IPartitioner<?> partitioner) throws IOException
+    private int importUnsorted(String jsonFile, ColumnFamily columnFamily, String ssTablePath, IPartitioner partitioner) throws IOException
     {
         int importedKeys = 0;
         long start = System.nanoTime();
@@ -349,7 +350,7 @@ public class SSTableImport
     }
 
     private int importSorted(String jsonFile, ColumnFamily columnFamily, String ssTablePath,
-            IPartitioner<?> partitioner) throws IOException
+            IPartitioner partitioner) throws IOException
     {
         int importedKeys = 0; // already imported keys count
         long start = System.nanoTime();
@@ -500,7 +501,7 @@ public class SSTableImport
             isSorted = true;
         }
 
-        DatabaseDescriptor.loadSchemas();
+        DatabaseDescriptor.loadSchemas(false);
         if (Schema.instance.getNonSystemKeyspaces().size() < 1)
         {
             String msg = "no non-system keyspaces are defined";
@@ -514,6 +515,7 @@ public class SSTableImport
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             e.printStackTrace();
             System.err.println("ERROR: " + e.getMessage());
             System.exit(-1);

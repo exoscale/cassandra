@@ -34,7 +34,6 @@ import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.pager.Pageable;
-import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class RangeSliceCommand extends AbstractRangeCommand implements Pageable
 {
@@ -91,7 +90,7 @@ public class RangeSliceCommand extends AbstractRangeCommand implements Pageable
         return new RangeSliceCommand(keyspace,
                                      columnFamily,
                                      timestamp,
-                                     predicate,
+                                     predicate.cloneShallow(),
                                      subRange,
                                      rowFilter,
                                      maxResults,
@@ -104,7 +103,7 @@ public class RangeSliceCommand extends AbstractRangeCommand implements Pageable
         return new RangeSliceCommand(keyspace,
                                      columnFamily,
                                      timestamp,
-                                     predicate,
+                                     predicate.cloneShallow(),
                                      keyRange,
                                      rowFilter,
                                      newLimit,
@@ -170,9 +169,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
             out.writeInt(sliceCommand.rowFilter.size());
             for (IndexExpression expr : sliceCommand.rowFilter)
             {
-                ByteBufferUtil.writeWithShortLength(expr.column, out);
-                out.writeInt(expr.operator.ordinal());
-                ByteBufferUtil.writeWithShortLength(expr.value, out);
+                expr.writeTo(out);
             }
         }
         AbstractBounds.serializer.serialize(sliceCommand.keyRange, out, version);
@@ -188,6 +185,13 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
         long timestamp = in.readLong();
 
         CFMetaData metadata = Schema.instance.getCFMetaData(keyspace, columnFamily);
+        if (metadata == null)
+        {
+            String message = String.format("Got range slice command for nonexistent table %s.%s.  If the table was just " +
+                    "created, this is likely due to the schema not being fully propagated.  Please wait for schema " +
+                    "agreement on table creation." , keyspace, columnFamily);
+            throw new UnknownColumnFamilyException(message, null);
+        }
 
         IDiskAtomFilter predicate = metadata.comparator.diskAtomFilterSerializer().deserialize(in, version);
 
@@ -196,11 +200,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
         rowFilter = new ArrayList<>(filterCount);
         for (int i = 0; i < filterCount; i++)
         {
-            IndexExpression expr;
-            expr = new IndexExpression(ByteBufferUtil.readWithShortLength(in),
-                                       IndexExpression.Operator.findByOrdinal(in.readInt()),
-                                       ByteBufferUtil.readWithShortLength(in));
-            rowFilter.add(expr);
+            rowFilter.add(IndexExpression.readFrom(in));
         }
         AbstractBounds<RowPosition> range = AbstractBounds.serializer.deserialize(in, version).toRowBounds();
 

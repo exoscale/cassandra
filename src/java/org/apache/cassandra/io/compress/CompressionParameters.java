@@ -105,7 +105,9 @@ public class CompressionParameters
 
     public void setLiveMetadata(final CFMetaData liveMetadata)
     {
-        assert this.liveMetadata == null || this.liveMetadata == liveMetadata;
+        if (liveMetadata == null)
+            return;
+
         this.liveMetadata = liveMetadata;
     }
 
@@ -114,7 +116,7 @@ public class CompressionParameters
         validateCrcCheckChance(crcCheckChance);
         this.crcCheckChance = crcCheckChance;
 
-        if (liveMetadata != null)
+        if (liveMetadata != null && this != liveMetadata.compressionParameters)
             liveMetadata.compressionParameters.setCrcCheckChance(crcCheckChance);
     }
 

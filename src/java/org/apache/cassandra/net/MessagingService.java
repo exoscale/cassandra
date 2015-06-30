@@ -33,10 +33,13 @@ import javax.management.ObjectName;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.concurrent.TracingAwareExecutorService;
@@ -329,7 +332,7 @@ public final class MessagingService implements MessagingServiceMBean
                 logDroppedMessages();
             }
         };
-        StorageService.scheduledTasks.scheduleWithFixedDelay(logDropped, LOG_DROPPED_INTERVAL_IN_MS, LOG_DROPPED_INTERVAL_IN_MS, TimeUnit.MILLISECONDS);
+        ScheduledExecutors.scheduledTasks.scheduleWithFixedDelay(logDropped, LOG_DROPPED_INTERVAL_IN_MS, LOG_DROPPED_INTERVAL_IN_MS, TimeUnit.MILLISECONDS);
 
         Function<Pair<Integer, ExpiringMap.CacheableObject<CallbackInfo>>, ?> timeoutReporter = new Function<Pair<Integer, ExpiringMap.CacheableObject<CallbackInfo>>, Object>()
         {
@@ -725,7 +728,7 @@ public final class MessagingService implements MessagingServiceMBean
     {
         TraceState state = Tracing.instance.initializeFromMessage(message);
         if (state != null)
-            state.trace("Message received from {}", message.from);
+            state.trace("{} message received from {}", message.verb, message.from);
 
         Verb verb = message.verb;
         message = SinkManager.processInboundMessage(message, id);
@@ -895,6 +898,7 @@ public final class MessagingService implements MessagingServiceMBean
     private static class SocketThread extends Thread
     {
         private final ServerSocket server;
+        private final Set<Closeable> connections = Sets.newConcurrentHashSet();
 
         SocketThread(ServerSocket server, String name)
         {
@@ -918,6 +922,7 @@ public final class MessagingService implements MessagingServiceMBean
                     }
 
                     socket.setKeepAlive(true);
+                    socket.setSoTimeout(2 * OutboundTcpConnection.WAIT_FOR_VERSION_MAX_TIME);
                     // determine the connection type to decide whether to buffer
                     DataInputStream in = new DataInputStream(socket.getInputStream());
                     MessagingService.validateMagic(in.readInt());
@@ -925,11 +930,13 @@ public final class MessagingService implements MessagingServiceMBean
                     boolean isStream = MessagingService.getBits(header, 3, 1) == 1;
                     int version = MessagingService.getBits(header, 15, 8);
                     logger.debug("Connection version {} from {}", version, socket.getInetAddress());
+                    socket.setSoTimeout(0);
 
                     Thread thread = isStream
-                                  ? new IncomingStreamingConnection(version, socket)
-                                  : new IncomingTcpConnection(version, MessagingService.getBits(header, 2, 1) == 1, socket);
+                                  ? new IncomingStreamingConnection(version, socket, connections)
+                                  : new IncomingTcpConnection(version, MessagingService.getBits(header, 2, 1) == 1, socket, connections);
                     thread.start();
+                    connections.add((Closeable) thread);
                 }
                 catch (AsynchronousCloseException e)
                 {
@@ -955,6 +962,10 @@ public final class MessagingService implements MessagingServiceMBean
         {
             logger.debug("Closing accept() thread");
             server.close();
+            for (Closeable connection : connections) 
+            {
+                connection.close();
+            }
         }
 
         private boolean authenticate(Socket socket)

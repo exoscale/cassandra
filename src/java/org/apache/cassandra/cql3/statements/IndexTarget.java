@@ -17,26 +17,53 @@
  */
 package org.apache.cassandra.cql3.statements;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 
 public class IndexTarget
 {
     public final ColumnIdentifier column;
     public final boolean isCollectionKeys;
+    public final boolean isFullCollection;
 
-    private IndexTarget(ColumnIdentifier column, boolean isCollectionKeys)
+    private IndexTarget(ColumnIdentifier column, boolean isCollectionKeys, boolean isFullCollection)
     {
         this.column = column;
         this.isCollectionKeys = isCollectionKeys;
+        this.isFullCollection = isFullCollection;
     }
 
-    public static IndexTarget of(ColumnIdentifier c)
+    public static class Raw
     {
-        return new IndexTarget(c, false);
-    }
+        private final ColumnIdentifier.Raw column;
+        private final boolean isCollectionKeys;
+        private final boolean isFullCollection;
 
-    public static IndexTarget keysOf(ColumnIdentifier c)
-    {
-        return new IndexTarget(c, true);
+        private Raw(ColumnIdentifier.Raw column, boolean isCollectionKeys, boolean isFullCollection)
+        {
+            this.column = column;
+            this.isCollectionKeys = isCollectionKeys;
+            this.isFullCollection = isFullCollection;
+        }
+
+        public static Raw valuesOf(ColumnIdentifier.Raw c)
+        {
+            return new Raw(c, false, false);
+        }
+
+        public static Raw keysOf(ColumnIdentifier.Raw c)
+        {
+            return new Raw(c, true, false);
+        }
+
+        public static Raw fullCollection(ColumnIdentifier.Raw c)
+        {
+            return new Raw(c, false, true);
+        }
+
+        public IndexTarget prepare(CFMetaData cfm)
+        {
+            return new IndexTarget(column.prepare(cfm), isCollectionKeys, isFullCollection);
+        }
     }
 }

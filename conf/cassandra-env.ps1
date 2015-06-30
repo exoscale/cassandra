@@ -134,14 +134,14 @@ Function CalculateHeapSizes
     }
     if (($env:MAX_HEAP_SIZE -and !$env:HEAP_NEWSIZE) -or (!$env:MAX_HEAP_SIZE -and $env:HEAP_NEWSIZE))
     {
-        echo "please set or unset MAX_HEAP_SIZE and HEAP_NEWSIZE in pairs"
+        echo "Please set or unset MAX_HEAP_SIZE and HEAP_NEWSIZE in pairs.  Aborting startup."
         exit 1
     }
 
     $memObject = Get-WMIObject -class win32_physicalmemory
     if ($memObject -eq $null)
     {
-        echo "WARNING!  Could not determine system memory.  Defaulting to 2G heap, 512M newgen.  Manually override in conf/cassandra-env.ps1 for different heap values."
+        echo "WARNING!  Could not determine system memory.  Defaulting to 2G heap, 512M newgen.  Manually override in conf\cassandra-env.ps1 for different heap values."
         $env:MAX_HEAP_SIZE = "2048M"
         $env:HEAP_NEWSIZE = "512M"
         return
@@ -301,7 +301,7 @@ Function SetCassandraEnvironment
     if (($env:JVM_VENDOR -ne "OpenJDK") -or ($env:JVM_VERSION.CompareTo("1.6.0") -eq 1) -or
         (($env:JVM_VERSION -eq "1.6.0") -and ($env:JVM_PATCH_VERSION.CompareTo("22") -eq 1)))
     {
-        $env:JVM_OPTS = "$env:JVM_OPTS -javaagent:""$env:CASSANDRA_HOME\lib\jamm-0.2.6.jar"""
+        $env:JVM_OPTS = "$env:JVM_OPTS -javaagent:""$env:CASSANDRA_HOME\lib\jamm-0.3.0.jar"""
     }
 
     # enable assertions.  disabling this in production will give a modest
@@ -312,6 +312,9 @@ Function SetCassandraEnvironment
     # JMX connections.
     $JMX_PORT="7199"
 
+    # store in env to check if it's avail in verification
+    $env:JMX_PORT=$JMX_PORT
+
     $env:JVM_OPTS = "$env:JVM_OPTS -Dlog4j.defaultInitOverride=true"
 
     # some JVMs will fill up their heap when accessed via JMX, see CASSANDRA-6541
@@ -320,14 +323,13 @@ Function SetCassandraEnvironment
     # enable thread priorities, primarily so we can give periodic tasks
     # a lower priority to avoid interfering with client workload
     $env:JVM_OPTS="$env:JVM_OPTS -XX:+UseThreadPriorities"
-    # allows lowering thread priority without being root.  see
-    # http://tech.stolsvik.com/2010/01/linux-java-thread-priorities-workar
+    # allows lowering thread priority without being root on linux - probably
+    # not necessary on Windows but doesn't harm anything.
+    # see http://tech.stolsvik.com/2010/01/linux-java-thread-priorities-workar
     $env:JVM_OPTS="$env:JVM_OPTS -XX:ThreadPriorityPolicy=42"
 
     # min and max heap sizes should be set to the same value to avoid
-    # stop-the-world GC pauses during resize, and so that we can lock the
-    # heap in memory on startup to prevent any of it from being swapped
-    # out.
+    # stop-the-world GC pauses during resize.
     $env:JVM_OPTS="$env:JVM_OPTS -Xms$env:MAX_HEAP_SIZE"
     $env:JVM_OPTS="$env:JVM_OPTS -Xmx$env:MAX_HEAP_SIZE"
     $env:JVM_OPTS="$env:JVM_OPTS -Xmn$env:HEAP_NEWSIZE"
@@ -366,22 +368,23 @@ Function SetCassandraEnvironment
     # $env:JVM_OPTS="$env:JVM_OPTS -XX:+PrintGCApplicationStoppedTime"
     # $env:JVM_OPTS="$env:JVM_OPTS -XX:+PrintPromotionFailure"
     # $env:JVM_OPTS="$env:JVM_OPTS -XX:PrintFLSStatistics=1"
-    # $env:JVM_OPTS="$env:JVM_OPTS -Xloggc:/var/log/cassandra/gc-`date +%s`.log"
+    # $currentDate = (Get-Date).ToString('yyyy.MM.dd')
+    # $env:JVM_OPTS="$env:JVM_OPTS -Xloggc:$env:CASSANDRA_HOME/logs/gc-$currentDate.log"
 
     # If you are using JDK 6u34 7u2 or later you can enable GC log rotation
     # don't stick the date in the log name if rotation is on.
-    # $env:JVM_OPTS="$env:JVM_OPTS -Xloggc:/var/log/cassandra/gc.log"
+    # $env:JVM_OPTS="$env:JVM_OPTS -Xloggc:$env:CASSANDRA_HOME/logs/gc.log"
     # $env:JVM_OPTS="$env:JVM_OPTS -XX:+UseGCLogFileRotation"
     # $env:JVM_OPTS="$env:JVM_OPTS -XX:NumberOfGCLogFiles=10"
     # $env:JVM_OPTS="$env:JVM_OPTS -XX:GCLogFileSize=10M"
 
     # Configure the following for JEMallocAllocator and if jemalloc is not available in the system
-    # library path (Example: /usr/local/lib/). Usually "make install" will do the right thing.
+    # library path.
     # set LD_LIBRARY_PATH=<JEMALLOC_HOME>/lib/
     # $env:JVM_OPTS="$env:JVM_OPTS -Djava.library.path=<JEMALLOC_HOME>/lib/"
 
     # uncomment to have Cassandra JVM listen for remote debuggers/profilers on port 1414
-    # $env:JVM_OPTS="$env:JVM_OPTS -Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=1414"
+    # $env:JVM_OPTS="$env:JVM_OPTS -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=1414"
 
     # Prefer binding to IPv4 network intefaces (when net.ipv6.bindv6only=1). See
     # http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6342561 (short version:
@@ -397,11 +400,18 @@ Function SetCassandraEnvironment
     # https://blogs.oracle.com/jmxetc/entry/troubleshooting_connection_problems_in_jconsole
     # for more on configuring JMX through firewalls, etc. (Short version:
     # get it working with no firewall first.)
-    $env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.port=$JMX_PORT"
-    $env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.ssl=false"
-    $env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.authenticate=false"
-    #$env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.password.file=/etc/cassandra/jmxremote.password"
-    $env:JVM_OPTS="$env:JVM_OPTS $JVM_EXTRA_OPTS"
+    #
+    # Due to potential security exploits, Cassandra ships with JMX accessible
+    # *only* from localhost.  To enable remote JMX connections, uncomment lines below
+    # with authentication and ssl enabled. See https://wiki.apache.org/cassandra/JmxSecurity 
+    #
+    #$env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.port=$JMX_PORT"
+    #$env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.ssl=false"
+    #$env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.authenticate=true"
+    #$env:JVM_OPTS="$env:JVM_OPTS -Dcom.sun.management.jmxremote.password.file=C:/jmxremote.password"
+    $env:JVM_OPTS="$env:JVM_OPTS -Dcassandra.jmx.local.port=$JMX_PORT -XX:+DisableExplicitGC"
+
+    $env:JVM_OPTS="$env:JVM_OPTS $env:JVM_EXTRA_OPTS"
 
     $env:JVM_OPTS = "$env:JVM_OPTS -Dlog4j.configuration=log4j-server.properties"
 }

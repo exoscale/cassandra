@@ -27,7 +27,7 @@ import org.apache.cassandra.utils.Pair;
 /**
  * AbstractBounds containing neither of its endpoints: (left, right).  Used by CQL key > X AND key < Y range scans.
  */
-public class ExcludingBounds<T extends RingPosition> extends AbstractBounds<T>
+public class ExcludingBounds<T extends RingPosition<T>> extends AbstractBounds<T>
 {
     public ExcludingBounds(T left, T right)
     {
@@ -54,6 +54,16 @@ public class ExcludingBounds<T extends RingPosition> extends AbstractBounds<T>
         AbstractBounds<T> lb = new Range<T>(left, position, partitioner);
         AbstractBounds<T> rb = new ExcludingBounds<T>(position, right, partitioner);
         return Pair.create(lb, rb);
+    }
+
+    public boolean inclusiveLeft()
+    {
+        return false;
+    }
+
+    public boolean inclusiveRight()
+    {
+        return false;
     }
 
     public List<? extends AbstractBounds<T>> unwrap()
@@ -95,11 +105,13 @@ public class ExcludingBounds<T extends RingPosition> extends AbstractBounds<T>
         return new ExcludingBounds<RowPosition>(left.maxKeyBound(partitioner), right.minKeyBound(partitioner), partitioner);
     }
 
+    @SuppressWarnings("unchecked")
     public AbstractBounds<RowPosition> toRowBounds()
     {
         return (left instanceof Token) ? makeRowBounds((Token)left, (Token)right, partitioner) : (ExcludingBounds<RowPosition>)this;
     }
 
+    @SuppressWarnings("unchecked")
     public AbstractBounds<Token> toTokenBounds()
     {
         return (left instanceof RowPosition) ? new ExcludingBounds<Token>(((RowPosition)left).getToken(), ((RowPosition)right).getToken(), partitioner) : (ExcludingBounds<Token>)this;

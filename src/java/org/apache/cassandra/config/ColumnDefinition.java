@@ -298,7 +298,7 @@ public class ColumnDefinition extends ColumnSpecification
     public static List<ColumnDefinition> fromThrift(String ksName, String cfName, AbstractType<?> thriftComparator, AbstractType<?> thriftSubcomparator, List<ColumnDef> thriftDefs) throws SyntaxException, ConfigurationException
     {
         if (thriftDefs == null)
-            return Collections.emptyList();
+            return new ArrayList<>();
 
         List<ColumnDefinition> defs = new ArrayList<>(thriftDefs.size());
         for (ColumnDef thriftColumnDef : thriftDefs)
@@ -475,5 +475,17 @@ public class ColumnDefinition extends ColumnSpecification
     public Map<String,String> getIndexOptions()
     {
         return indexOptions;
+    }
+
+    /**
+     * Checks if the index option with the specified name has been specified.
+     *
+     * @param name index option name
+     * @return <code>true</code> if the index option with the specified name has been specified, <code>false</code>
+     * otherwise.
+     */
+    public boolean hasIndexOption(String name)
+    {
+        return indexOptions != null && indexOptions.containsKey(name);
     }
 }

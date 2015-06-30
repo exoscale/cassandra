@@ -21,43 +21,30 @@
 package org.apache.cassandra.stress;
 
 
-import com.datastax.driver.core.*;
-import com.datastax.driver.core.exceptions.AlreadyExistsException;
+import java.io.IOError;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Serializable;
+import java.net.URI;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 import com.google.common.base.Function;
 import com.google.common.util.concurrent.Uninterruptibles;
+
+import com.datastax.driver.core.*;
+import com.datastax.driver.core.exceptions.AlreadyExistsException;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.statements.CreateKeyspaceStatement;
 import org.apache.cassandra.exceptions.RequestValidationException;
-
 import org.apache.cassandra.exceptions.SyntaxException;
-import org.apache.cassandra.stress.generate.Distribution;
-import org.apache.cassandra.stress.generate.DistributionFactory;
-import org.apache.cassandra.stress.generate.PartitionGenerator;
-import org.apache.cassandra.stress.generate.RatioDistributionFactory;
-import org.apache.cassandra.stress.generate.SeedManager;
-import org.apache.cassandra.stress.generate.values.Booleans;
-import org.apache.cassandra.stress.generate.values.Bytes;
-import org.apache.cassandra.stress.generate.values.Generator;
-import org.apache.cassandra.stress.generate.values.Dates;
-import org.apache.cassandra.stress.generate.values.Doubles;
-import org.apache.cassandra.stress.generate.values.Floats;
-import org.apache.cassandra.stress.generate.values.GeneratorConfig;
-import org.apache.cassandra.stress.generate.values.Inets;
-import org.apache.cassandra.stress.generate.values.Integers;
-import org.apache.cassandra.stress.generate.values.Lists;
-import org.apache.cassandra.stress.generate.values.Longs;
-import org.apache.cassandra.stress.generate.values.Sets;
-import org.apache.cassandra.stress.generate.values.Strings;
-import org.apache.cassandra.stress.generate.values.TimeUUIDs;
-import org.apache.cassandra.stress.generate.values.UUIDs;
+import org.apache.cassandra.stress.generate.*;
+import org.apache.cassandra.stress.generate.values.*;
 import org.apache.cassandra.stress.operations.userdefined.SchemaInsert;
 import org.apache.cassandra.stress.operations.userdefined.SchemaQuery;
-import org.apache.cassandra.stress.settings.OptionDistribution;
-import org.apache.cassandra.stress.settings.OptionRatioDistribution;
-import org.apache.cassandra.stress.settings.StressSettings;
-import org.apache.cassandra.stress.settings.ValidationType;
+import org.apache.cassandra.stress.operations.userdefined.ValidatingSchemaQuery;
+import org.apache.cassandra.stress.settings.*;
 import org.apache.cassandra.stress.util.JavaDriverClient;
 import org.apache.cassandra.stress.util.ThriftClient;
 import org.apache.cassandra.stress.util.Timer;
@@ -67,19 +54,6 @@ import org.apache.thrift.TException;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
 import org.yaml.snakeyaml.error.YAMLException;
-
-import java.io.*;
-import java.net.URI;
-import java.net.URL;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 public class StressProfile implements Serializable
 {
@@ -102,6 +76,7 @@ public class StressProfile implements Serializable
     transient volatile RatioDistributionFactory selectchance;
     transient volatile PreparedStatement insertStatement;
     transient volatile Integer thriftInsertId;
+    transient volatile List<ValidatingSchemaQuery.Factory> validationFactories;
 
     transient volatile Map<String, SchemaQuery.ArgSelect> argSelects;
     transient volatile Map<String, PreparedStatement> queryStatements;
@@ -212,6 +187,16 @@ public class StressProfile implements Serializable
         maybeLoadSchemaInfo(settings);
     }
 
+    public void truncateTable(StressSettings settings)
+    {
+        JavaDriverClient client = settings.getJavaDriverClient(false);
+        assert settings.command.truncate != SettingsCommand.TruncateWhen.NEVER;
+        String cql = String.format("TRUNCATE %s.%s", keyspaceName, tableName);
+        client.execute(cql, org.apache.cassandra.db.ConsistencyLevel.ONE);
+        System.out.println(String.format("Truncated %s.%s. Sleeping %ss for propagation.",
+                                         keyspaceName, tableName, settings.node.nodes.size()));
+        Uninterruptibles.sleepUninterruptibly(settings.node.nodes.size(), TimeUnit.SECONDS);
+    }
 
     private void maybeLoadSchemaInfo(StressSettings settings)
     {
@@ -247,7 +232,7 @@ public class StressProfile implements Serializable
         }
     }
 
-    public SchemaQuery getQuery(String name, Timer timer, PartitionGenerator generator, StressSettings settings)
+    public SchemaQuery getQuery(String name, Timer timer, PartitionGenerator generator, SeedManager seeds, StressSettings settings)
     {
         if (queryStatements == null)
         {
@@ -282,14 +267,14 @@ public class StressProfile implements Serializable
             }
         }
 
-        // TODO validation
         name = name.toLowerCase();
         if (!queryStatements.containsKey(name))
             throw new IllegalArgumentException("No query defined with name " + name);
-        return new SchemaQuery(timer, generator, settings, thriftQueryIds.get(name), queryStatements.get(name), ThriftConversion.fromThrift(settings.command.consistencyLevel), ValidationType.NOT_FAIL, argSelects.get(name));
+        return new SchemaQuery(timer, settings, generator, seeds, thriftQueryIds.get(name), queryStatements.get(name),
+                               ThriftConversion.fromThrift(settings.command.consistencyLevel), argSelects.get(name));
     }
 
-    public SchemaInsert getInsert(Timer timer, PartitionGenerator generator, StressSettings settings)
+    public SchemaInsert getInsert(Timer timer, PartitionGenerator generator, SeedManager seedManager, StressSettings settings)
     {
         if (insertStatement == null)
         {
@@ -401,7 +386,27 @@ public class StressProfile implements Serializable
             }
         }
 
-        return new SchemaInsert(timer, generator, settings, partitions.get(), selectchance.get(), thriftInsertId, insertStatement, ThriftConversion.fromThrift(settings.command.consistencyLevel), batchType);
+        return new SchemaInsert(timer, settings, generator, seedManager, partitions.get(), selectchance.get(), thriftInsertId, insertStatement, ThriftConversion.fromThrift(settings.command.consistencyLevel), batchType);
+    }
+
+    public List<ValidatingSchemaQuery> getValidate(Timer timer, PartitionGenerator generator, SeedManager seedManager, StressSettings settings)
+    {
+        if (validationFactories == null)
+        {
+            synchronized (this)
+            {
+                if (validationFactories == null)
+                {
+                    maybeLoadSchemaInfo(settings);
+                    validationFactories = ValidatingSchemaQuery.create(tableMetaData, settings);
+                }
+            }
+        }
+
+        List<ValidatingSchemaQuery> queries = new ArrayList<>();
+        for (ValidatingSchemaQuery.Factory factory : validationFactories)
+            queries.add(factory.create(timer, settings, generator, seedManager, ThriftConversion.fromThrift(settings.command.consistencyLevel)));
+        return queries;
     }
 
     private static <E> E select(E first, String key, String defValue, Map<String, String> map, Function<String, E> builder)
@@ -415,7 +420,7 @@ public class StressProfile implements Serializable
         return builder.apply(defValue);
     }
 
-    public PartitionGenerator newGenerator(StressSettings settings, SeedManager seeds)
+    public PartitionGenerator newGenerator(StressSettings settings)
     {
         if (generatorFactory == null)
         {
@@ -427,7 +432,7 @@ public class StressProfile implements Serializable
             }
         }
 
-        return generatorFactory.newGenerator(settings, seeds);
+        return generatorFactory.newGenerator(settings);
     }
 
     private class GeneratorFactory
@@ -449,9 +454,9 @@ public class StressProfile implements Serializable
                     valueColumns.add(new ColumnInfo(metadata.getName(), metadata.getType(), columnConfigs.get(metadata.getName())));
         }
 
-        PartitionGenerator newGenerator(StressSettings settings, SeedManager seeds)
+        PartitionGenerator newGenerator(StressSettings settings)
         {
-            return new PartitionGenerator(get(partitionKeys), get(clusteringColumns), get(valueColumns), settings.generate.order, seeds);
+            return new PartitionGenerator(get(partitionKeys), get(clusteringColumns), get(valueColumns), settings.generate.order);
         }
 
         List<Generator> get(List<ColumnInfo> columnInfos)
@@ -504,8 +509,9 @@ public class StressProfile implements Serializable
                 case INET:
                     return new Inets(name, config);
                 case INT:
-                case VARINT:
                     return new Integers(name, config);
+                case VARINT:
+                    return new BigIntegers(name, config);
                 case TIMESTAMP:
                     return new Dates(name, config);
                 case UUID:

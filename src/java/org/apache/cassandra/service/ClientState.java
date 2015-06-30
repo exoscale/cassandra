@@ -19,7 +19,7 @@ package org.apache.cassandra.service;
 
 import java.net.SocketAddress;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
@@ -40,7 +40,7 @@ import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.thrift.ThriftValidation;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.SemanticVersion;
 
 /**
@@ -84,6 +84,7 @@ public class ClientState
             }
             catch (Exception e)
             {
+                JVMStabilityInspector.inspectThrowable(e);
                 logger.info("Cannot use class {} as query handler ({}), ignoring by defaulting on normal query handling", customHandlerClass, e.getMessage());
             }
         }
@@ -96,6 +97,10 @@ public class ClientState
 
     // The remote address of the client - null for internal clients.
     private final SocketAddress remoteAddress;
+
+    // The biggest timestamp that was returned by getTimestamp/assigned to a query. This is global to the VM
+    // for the sake of paxos (see #9649).
+    private static final AtomicLong lastTimestampMicros = new AtomicLong(0);
 
     /**
      * Construct a new, empty ClientState for internal calls.
@@ -128,6 +133,38 @@ public class ClientState
     public static ClientState forExternalCalls(SocketAddress remoteAddress)
     {
         return new ClientState(remoteAddress);
+    }
+
+    /**
+     * This clock guarantees that updates for the same ClientState will be ordered
+     * in the sequence seen, even if multiple updates happen in the same millisecond.
+     */
+    public long getTimestamp()
+    {
+        while (true)
+        {
+            long current = System.currentTimeMillis() * 1000;
+            long last = lastTimestampMicros.get();
+            long tstamp = last >= current ? last + 1 : current;
+            if (lastTimestampMicros.compareAndSet(last, tstamp))
+                return tstamp;
+        }
+    }
+
+    /**
+     * This is the same than {@link #getTimestamp()} but this guarantees that the returned timestamp
+     * will not be smaller than the provided {@code minTimestampToUse}.
+     */
+    public long getTimestamp(long minTimestampToUse)
+    {
+        while (true)
+        {
+            long current = Math.max(System.currentTimeMillis() * 1000, minTimestampToUse);
+            long last = lastTimestampMicros.get();
+            long tstamp = last >= current ? last + 1 : current;
+            if (lastTimestampMicros.compareAndSet(last, tstamp))
+                return tstamp;
+        }
     }
 
     public static QueryHandler getCQLQueryHandler()
@@ -313,17 +350,6 @@ public class ClientState
 
     private Set<Permission> authorize(IResource resource)
     {
-        // AllowAllAuthorizer or manually disabled caching.
-        if (Auth.permissionsCache == null)
-            return DatabaseDescriptor.getAuthorizer().authorize(user, resource);
-
-        try
-        {
-            return Auth.permissionsCache.get(Pair.create(user, resource));
-        }
-        catch (ExecutionException e)
-        {
-            throw new RuntimeException(e);
-        }
+        return Auth.getPermissions(user, resource);
     }
 }

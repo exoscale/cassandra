@@ -59,7 +59,7 @@ public class CompositesSearcher extends SecondaryIndexSearcher
     public List<Row> search(ExtendedFilter filter)
     {
         assert filter.getClause() != null && !filter.getClause().isEmpty();
-        final IndexExpression primary = highestSelectivityPredicate(filter.getClause());
+        final IndexExpression primary = highestSelectivityPredicate(filter.getClause(), true);
         final CompositesIndex index = (CompositesIndex)indexManager.getIndexForColumn(primary.column);
         // TODO: this should perhaps not open and maintain a writeOp for the full duration, but instead only *try* to delete stale entries, without blocking if there's no room
         // as it stands, we open a writeOp and keep it open for the duration to ensure that should this CF get flushed to make room we don't block the reclamation of any room being made
@@ -125,9 +125,8 @@ public class CompositesSearcher extends SecondaryIndexSearcher
             private int limit = filter.currentLimit();
             private int columnsCount = 0;
 
-            private int meanColumns = Math.max(index.getIndexCfs().getMeanColumns(), 1);
-            // We shouldn't fetch only 1 row as this provides buggy paging in case the first row doesn't satisfy all clauses
-            private int rowsPerQuery = Math.max(Math.min(filter.maxRows(), filter.maxColumns() / meanColumns), 2);
+            // We have to fetch at least two rows to avoid breaking paging if the first row doesn't satisfy all clauses
+            private int indexCellsPerQuery = Math.max(2, Math.min(filter.maxColumns(), filter.maxRows()));
 
             public boolean needsFiltering()
             {
@@ -163,9 +162,9 @@ public class CompositesSearcher extends SecondaryIndexSearcher
 
                     if (indexCells == null || indexCells.isEmpty())
                     {
-                        if (columnsRead < rowsPerQuery)
+                        if (columnsRead < indexCellsPerQuery)
                         {
-                            logger.trace("Read only {} (< {}) last page through, must be done", columnsRead, rowsPerQuery);
+                            logger.trace("Read only {} (< {}) last page through, must be done", columnsRead, indexCellsPerQuery);
                             return makeReturn(currentKey, data);
                         }
 
@@ -178,7 +177,7 @@ public class CompositesSearcher extends SecondaryIndexSearcher
                                                                              lastSeenPrefix,
                                                                              endPrefix,
                                                                              false,
-                                                                             rowsPerQuery,
+                                                                             indexCellsPerQuery,
                                                                              filter.timestamp);
                         ColumnFamily indexRow = index.getIndexCfs().getColumnFamily(indexFilter);
                         if (indexRow == null || !indexRow.hasColumns())
@@ -220,6 +219,7 @@ public class CompositesSearcher extends SecondaryIndexSearcher
                         {
                             DecoratedKey previousKey = currentKey;
                             currentKey = dk;
+                            previousPrefix = null;
 
                             // We're done with the previous row, return it if it had data, continue otherwise
                             indexCells.addFirst(cell);
@@ -260,7 +260,8 @@ public class CompositesSearcher extends SecondaryIndexSearcher
                         else
                             previousPrefix = null;
 
-                        logger.trace("Adding index hit to current row for {}", indexComparator.getString(cell.name()));
+                        if (logger.isTraceEnabled())
+                            logger.trace("Adding index hit to current row for {}", indexComparator.getString(cell.name()));
 
                         // We always query the whole CQL3 row. In the case where the original filter was a name filter this might be
                         // slightly wasteful, but this probably doesn't matter in practice and it simplify things.

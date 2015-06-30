@@ -43,6 +43,7 @@ import org.apache.cassandra.io.sstable.SSTableLoader;
 import org.apache.cassandra.streaming.*;
 import org.apache.cassandra.thrift.*;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.OutputHandler;
 
 public class BulkLoader
@@ -74,6 +75,7 @@ public class BulkLoader
 
     public static void main(String args[])
     {
+        Config.setClientMode(true);
         LoaderOptions options = LoaderOptions.parseArgs(args);
         OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
         SSTableLoader loader = new SSTableLoader(
@@ -107,6 +109,7 @@ public class BulkLoader
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             System.err.println(e.getMessage());
             if (e.getCause() != null)
                 System.err.println(e.getCause());
@@ -224,14 +227,14 @@ public class BulkLoader
                     peak = average;
                 sb.append("(avg: ").append(average).append(" MB/s)");
 
-                System.err.print(sb.toString());
+                System.out.print(sb.toString());
             }
         }
 
         private int mbPerSec(long bytes, long timeInNano)
         {
             double bytesPerNano = ((double)bytes) / timeInNano;
-            return (int)((bytesPerNano * 1000 * 1000 * 1000) / (1024 * 2024));
+            return (int)((bytesPerNano * 1000 * 1000 * 1000) / (1024 * 1024));
         }
 
         private void printSummary(int connectionsPerHost)
@@ -247,7 +250,7 @@ public class BulkLoader
             sb.append(String.format("   %-30s: %-10d%n", "Total duration (ms): ", durationMS));
             sb.append(String.format("   %-30s: %-10d%n", "Average transfer rate (MB/s): ", + average));
             sb.append(String.format("   %-30s: %-10d%n", "Peak transfer rate (MB/s): ", + peak));
-            System.err.println(sb.toString());
+            System.out.println(sb.toString());
         }
     }
 

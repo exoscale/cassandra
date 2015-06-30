@@ -20,7 +20,12 @@ package org.apache.cassandra.tools;
 
 import java.io.File;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import org.apache.commons.cli.*;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -28,10 +33,14 @@ import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
+import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.LeveledCompactionStrategy;
 import org.apache.cassandra.db.compaction.LeveledManifest;
 import org.apache.cassandra.db.compaction.Scrubber;
+import org.apache.cassandra.db.compaction.WrappingCompactionStrategy;
 import org.apache.cassandra.io.sstable.*;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.OutputHandler;
 
 import static org.apache.cassandra.tools.BulkLoader.CmdLineOptions;
@@ -44,6 +53,7 @@ public class StandaloneScrubber
     private static final String HELP_OPTION  = "help";
     private static final String MANIFEST_CHECK_OPTION  = "manifest-check";
     private static final String SKIP_CORRUPTED_OPTION = "skip-corrupted";
+    private static final String NO_VALIDATE_OPTION = "no-validate";
 
     public static void main(String args[])
     {
@@ -51,7 +61,7 @@ public class StandaloneScrubber
         try
         {
             // load keyspace descriptions.
-            DatabaseDescriptor.loadSchemas();
+            DatabaseDescriptor.loadSchemas(false);
 
             if (Schema.instance.getCFMetaData(options.keyspaceName, options.cfName) == null)
                 throw new IllegalArgumentException(String.format("Unknown keyspace/columnFamily %s.%s",
@@ -86,6 +96,7 @@ public class StandaloneScrubber
                 }
                 catch (Exception e)
                 {
+                    JVMStabilityInspector.inspectThrowable(e);
                     System.err.println(String.format("Error Loading %s: %s", entry.getKey(), e.getMessage()));
                     if (options.debug)
                         e.printStackTrace(System.err);
@@ -93,21 +104,13 @@ public class StandaloneScrubber
             }
             System.out.println(String.format("Pre-scrub sstables snapshotted into snapshot %s", snapshotName));
 
-            LeveledManifest manifest = null;
-            // If leveled, load the manifest
-            if (cfs.getCompactionStrategy() instanceof LeveledCompactionStrategy)
-            {
-                int maxSizeInMB = (int)((cfs.getCompactionStrategy().getMaxSSTableBytes()) / (1024L * 1024L));
-                manifest = LeveledManifest.create(cfs, maxSizeInMB, sstables);
-            }
-
             if (!options.manifestCheckOnly)
             {
                 for (SSTableReader sstable : sstables)
                 {
                     try
                     {
-                        Scrubber scrubber = new Scrubber(cfs, sstable, options.skipCorrupted, handler, true);
+                        Scrubber scrubber = new Scrubber(cfs, sstable, options.skipCorrupted, handler, true, !options.noValidate);
                         try
                         {
                             scrubber.scrub();
@@ -119,7 +122,7 @@ public class StandaloneScrubber
 
                         // Remove the sstable (it's been copied by scrub and snapshotted)
                         sstable.markObsolete();
-                        sstable.releaseReference();
+                        sstable.selfRef().release();
                     }
                     catch (Exception e)
                     {
@@ -129,10 +132,9 @@ public class StandaloneScrubber
                 }
             }
 
-            // Check (and repair) manifest
-            if (manifest != null)
-                checkManifest(manifest);
-
+            // Check (and repair) manifests
+            checkManifest(cfs.getCompactionStrategy(), cfs, sstables);
+            CompactionManager.instance.finishCompactionsAndShutdown(5, TimeUnit.MINUTES);
             SSTableDeletingTask.waitForDeletions();
             System.exit(0); // We need that to stop non daemonized threads
         }
@@ -145,11 +147,36 @@ public class StandaloneScrubber
         }
     }
 
-    private static void checkManifest(LeveledManifest manifest)
+    private static void checkManifest(AbstractCompactionStrategy strategy, ColumnFamilyStore cfs, Collection<SSTableReader> sstables)
     {
-        System.out.println(String.format("Checking leveled manifest"));
-        for (int i = 1; i <= manifest.getLevelCount(); ++i)
-            manifest.repairOverlappingSSTables(i);
+        WrappingCompactionStrategy wrappingStrategy = (WrappingCompactionStrategy)strategy;
+        int maxSizeInMB = (int)((cfs.getCompactionStrategy().getMaxSSTableBytes()) / (1024L * 1024L));
+        if (wrappingStrategy.getWrappedStrategies().size() == 2 && wrappingStrategy.getWrappedStrategies().iterator().next() instanceof LeveledCompactionStrategy)
+        {
+            System.out.println("Checking leveled manifest");
+            Predicate<SSTableReader> repairedPredicate = new Predicate<SSTableReader>()
+            {
+                @Override
+                public boolean apply(SSTableReader sstable)
+                {
+                    return sstable.isRepaired();
+                }
+            };
+
+            List<SSTableReader> repaired = Lists.newArrayList(Iterables.filter(sstables, repairedPredicate));
+            List<SSTableReader> unRepaired = Lists.newArrayList(Iterables.filter(sstables, Predicates.not(repairedPredicate)));
+
+            LeveledManifest repairedManifest = LeveledManifest.create(cfs, maxSizeInMB, repaired);
+            for (int i = 1; i < repairedManifest.getLevelCount(); i++)
+            {
+                repairedManifest.repairOverlappingSSTables(i);
+            }
+            LeveledManifest unRepairedManifest = LeveledManifest.create(cfs, maxSizeInMB, unRepaired);
+            for (int i = 1; i < unRepairedManifest.getLevelCount(); i++)
+            {
+                unRepairedManifest.repairOverlappingSSTables(i);
+            }
+        }
     }
 
     private static class Options
@@ -161,6 +188,7 @@ public class StandaloneScrubber
         public boolean verbose;
         public boolean manifestCheckOnly;
         public boolean skipCorrupted;
+        public boolean noValidate;
 
         private Options(String keyspaceName, String cfName)
         {
@@ -200,6 +228,7 @@ public class StandaloneScrubber
                 opts.verbose = cmd.hasOption(VERBOSE_OPTION);
                 opts.manifestCheckOnly = cmd.hasOption(MANIFEST_CHECK_OPTION);
                 opts.skipCorrupted = cmd.hasOption(SKIP_CORRUPTED_OPTION);
+                opts.noValidate = cmd.hasOption(NO_VALIDATE_OPTION);
 
                 return opts;
             }
@@ -225,6 +254,7 @@ public class StandaloneScrubber
             options.addOption("h",  HELP_OPTION,           "display this help message");
             options.addOption("m",  MANIFEST_CHECK_OPTION, "only check and repair the leveled manifest, without actually scrubbing the sstables");
             options.addOption("s",  SKIP_CORRUPTED_OPTION, "skip corrupt rows in counter tables");
+            options.addOption("n",  NO_VALIDATE_OPTION,    "do not validate columns using column validator");
             return options;
         }
 

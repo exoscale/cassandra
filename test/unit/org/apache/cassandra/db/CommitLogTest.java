@@ -259,7 +259,7 @@ public class CommitLogTest extends SchemaLoader
             CommitLog.instance.recover(new File[]{ logFile }); //CASSANDRA-1119 / CASSANDRA-1179 throw on failure*/
         }
     }
-    
+
     @Test
     public void testVersions()
     {
@@ -302,7 +302,6 @@ public class CommitLogTest extends SchemaLoader
         KillerForTests killerForTests = new KillerForTests();
         JVMStabilityInspector.Killer originalKiller = JVMStabilityInspector.replaceKiller(killerForTests);
         Config.CommitFailurePolicy oldPolicy = DatabaseDescriptor.getCommitFailurePolicy();
-
         try
         {
             DatabaseDescriptor.setCommitFailurePolicy(Config.CommitFailurePolicy.die);

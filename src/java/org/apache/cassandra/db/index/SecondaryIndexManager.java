@@ -18,6 +18,7 @@
 package org.apache.cassandra.db.index;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -33,6 +34,7 @@ import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.Future;
 
+import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -154,8 +156,9 @@ public class SecondaryIndexManager
      */
     public void maybeBuildSecondaryIndexes(Collection<SSTableReader> sstables, Set<String> idxNames)
     {
+        idxNames = filterByColumn(idxNames);
         if (idxNames.isEmpty())
-            return;
+            return;        
 
         logger.info(String.format("Submitting index build of %s for data in %s",
                                   idxNames, StringUtils.join(sstables, ", ")));
@@ -486,7 +489,7 @@ public class SecondaryIndexManager
                 }
                 else
                 {
-                    ((PerColumnSecondaryIndex) index).delete(key.getKey(), cell, opGroup);
+                    ((PerColumnSecondaryIndex) index).deleteForCleanup(key.getKey(), cell, opGroup);
                 }
             }
         }
@@ -528,7 +531,7 @@ public class SecondaryIndexManager
         {
             SecondaryIndex index = getIndexForColumn(ix.column);
 
-            if (index == null)
+            if (index == null || !index.supportsOperator(ix.operator))
                 continue;
 
             Set<ByteBuffer> columns = groupByIndexType.get(index.indexTypeForGrouping());
@@ -585,6 +588,7 @@ public class SecondaryIndexManager
         }
 
         // Validate
+        boolean haveSupportedIndexLookup = false;
         for (Map.Entry<String, Set<IndexExpression>> expressions : expressionsByIndexType.entrySet())
         {
             Set<ByteBuffer> columns = columnsByIndexType.get(expressions.getKey());
@@ -593,7 +597,36 @@ public class SecondaryIndexManager
             for (IndexExpression expression : expressions.getValue())
             {
                 searcher.validate(expression);
+                haveSupportedIndexLookup |= secondaryIndex.supportsOperator(expression.operator);
             }
+        }
+
+        if (!haveSupportedIndexLookup)
+        {
+            // build the error message
+            int i = 0;
+            StringBuilder sb = new StringBuilder("No secondary indexes on the restricted columns support the provided operators: ");
+            for (Map.Entry<String, Set<IndexExpression>> expressions : expressionsByIndexType.entrySet())
+            {
+                for (IndexExpression expression : expressions.getValue())
+                {
+                    if (i++ > 0)
+                        sb.append(", ");
+                    sb.append("'");
+                    String columnName;
+                    try
+                    {
+                        columnName = ByteBufferUtil.string(expression.column);
+                    }
+                    catch (CharacterCodingException ex)
+                    {
+                        columnName = "<unprintable>";
+                    }
+                    sb.append(columnName).append(" ").append(expression.operator).append(" <value>").append("'");
+                }
+            }
+
+            throw new InvalidRequestException(sb.toString());
         }
     }
 
@@ -605,25 +638,11 @@ public class SecondaryIndexManager
      */
     public List<Row> search(ExtendedFilter filter)
     {
-        List<SecondaryIndexSearcher> indexSearchers = getIndexSearchersForQuery(filter.getClause());
-
-        if (indexSearchers.isEmpty())
+        SecondaryIndexSearcher mostSelective = getHighestSelectivityIndexSearcher(filter.getClause());
+        if (mostSelective == null)
             return Collections.emptyList();
-
-        SecondaryIndexSearcher mostSelective = null;
-        long bestEstimate = Long.MAX_VALUE;
-        for (SecondaryIndexSearcher searcher : indexSearchers)
-        {
-            SecondaryIndex highestSelectivityIndex = searcher.highestSelectivityIndex(filter.getClause());
-            long estimate = highestSelectivityIndex.estimateResultRows();
-            if (estimate <= bestEstimate)
-            {
-                bestEstimate = estimate;
-                mostSelective = searcher;
-            }
-        }
-
-        return mostSelective.search(filter);
+        else
+            return mostSelective.search(filter);
     }
 
     public Set<SecondaryIndex> getIndexesByNames(Set<String> idxNames)
@@ -647,14 +666,14 @@ public class SecondaryIndexManager
             index.setIndexRemoved();
     }
 
-    public boolean validate(Cell cell)
+    public SecondaryIndex validate(ByteBuffer rowKey, Cell cell)
     {
         for (SecondaryIndex index : indexFor(cell.name()))
         {
-            if (!index.validate(cell))
-                return false;
+            if (!index.validate(rowKey, cell))
+                return index;
         }
-        return true;
+        return null;
     }
 
     static boolean shouldCleanupOldValue(Cell oldCell, Cell newCell)
@@ -671,6 +690,24 @@ public class SecondaryIndexManager
         return !oldCell.name().equals(newCell.name())
             || !oldCell.value().equals(newCell.value())
             || oldCell.timestamp() != newCell.timestamp();
+    }
+
+    private Set<String> filterByColumn(Set<String> idxNames)
+    {
+        Set<SecondaryIndex> indexes = getIndexesByNames(idxNames);
+        Set<String> filtered = new HashSet<>(idxNames.size());
+        for (SecondaryIndex candidate : indexes)
+        {
+            for (ColumnDefinition column : baseCfs.metadata.allColumns())
+            {
+                if (candidate.indexes(column))
+                {
+                    filtered.add(candidate.getIndexName());
+                    break;
+                }
+            }
+        }
+        return filtered;
     }
 
     public static interface Updater
@@ -758,7 +795,7 @@ public class SecondaryIndexManager
         {
             if (oldCell.equals(cell))
                 return;
-            
+
             for (SecondaryIndex index : indexFor(cell.name()))
             {
                 if (index instanceof PerColumnSecondaryIndex)
@@ -797,5 +834,31 @@ public class SecondaryIndexManager
                 ((PerRowSecondaryIndex) index).index(key.getKey(), cf);
         }
 
+    }
+
+    public SecondaryIndexSearcher getHighestSelectivityIndexSearcher(List<IndexExpression> clause)
+    {
+        if (clause == null)
+            return null;
+
+        List<SecondaryIndexSearcher> indexSearchers = getIndexSearchersForQuery(clause);
+
+        if (indexSearchers.isEmpty())
+            return null;
+
+        SecondaryIndexSearcher mostSelective = null;
+        long bestEstimate = Long.MAX_VALUE;
+        for (SecondaryIndexSearcher searcher : indexSearchers)
+        {
+            SecondaryIndex highestSelectivityIndex = searcher.highestSelectivityIndex(clause);
+            long estimate = highestSelectivityIndex.estimateResultRows();
+            if (estimate <= bestEstimate)
+            {
+                bestEstimate = estimate;
+                mostSelective = searcher;
+            }
+        }
+
+        return mostSelective;
     }
 }

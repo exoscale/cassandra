@@ -22,7 +22,6 @@ package org.apache.cassandra.stress.generate;
 
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,7 +29,6 @@ import java.util.NoSuchElementException;
 
 import com.google.common.collect.Iterables;
 
-import org.apache.cassandra.stress.Operation;
 import org.apache.cassandra.stress.generate.values.Generator;
 
 public class PartitionGenerator
@@ -46,30 +44,24 @@ public class PartitionGenerator
     final List<Generator> partitionKey;
     final List<Generator> clusteringComponents;
     final List<Generator> valueComponents;
-    final int[] clusteringChildAverages;
+    final int[] clusteringDescendantAverages;
+    final int[] clusteringComponentAverages;
 
     private final Map<String, Integer> indexMap;
     final Order order;
-    final SeedManager seeds;
 
-    final List<Partition> recyclable = new ArrayList<>();
-    int partitionsInUse = 0;
-
-    public void reset()
-    {
-        partitionsInUse = 0;
-    }
-
-    public PartitionGenerator(List<Generator> partitionKey, List<Generator> clusteringComponents, List<Generator> valueComponents, Order order, SeedManager seeds)
+    public PartitionGenerator(List<Generator> partitionKey, List<Generator> clusteringComponents, List<Generator> valueComponents, Order order)
     {
         this.partitionKey = partitionKey;
         this.clusteringComponents = clusteringComponents;
         this.valueComponents = valueComponents;
         this.order = order;
-        this.seeds = seeds;
-        this.clusteringChildAverages = new int[clusteringComponents.size()];
-        for (int i = clusteringChildAverages.length - 1 ; i >= 0 ; i--)
-            clusteringChildAverages[i] = (int) (i < (clusteringChildAverages.length - 1) ? clusteringComponents.get(i + 1).clusteringDistribution.average() * clusteringChildAverages[i + 1] : 1);
+        this.clusteringDescendantAverages = new int[clusteringComponents.size()];
+        this.clusteringComponentAverages = new int[clusteringComponents.size()];
+        for (int i = 0 ; i < clusteringComponentAverages.length ; i++)
+            clusteringComponentAverages[i] = (int) clusteringComponents.get(i).clusteringDistribution.average();
+        for (int i = clusteringDescendantAverages.length - 1 ; i >= 0 ; i--)
+            clusteringDescendantAverages[i] = (int) (i < (clusteringDescendantAverages.length - 1) ? clusteringComponentAverages[i + 1] * clusteringDescendantAverages[i + 1] : 1);
         double maxRowCount = 1d;
         double minRowCount = 1d;
         for (Generator component : clusteringComponents)
@@ -101,19 +93,6 @@ public class PartitionGenerator
         return i;
     }
 
-    public Partition generate(Operation op)
-    {
-        if (recyclable.size() <= partitionsInUse || recyclable.get(partitionsInUse) == null)
-            recyclable.add(new Partition(this));
-
-        Seed seed = seeds.next(op);
-        if (seed == null)
-            return null;
-        Partition partition = recyclable.get(partitionsInUse++);
-        partition.setSeed(seed);
-        return partition;
-    }
-
     public ByteBuffer convert(int c, Object v)
     {
         if (c < 0)
@@ -121,5 +100,14 @@ public class PartitionGenerator
         if (c < clusteringComponents.size())
             return clusteringComponents.get(c).type.decompose(v);
         return valueComponents.get(c - clusteringComponents.size()).type.decompose(v);
+    }
+
+    public Object convert(int c, ByteBuffer v)
+    {
+        if (c < 0)
+            return partitionKey.get(-1-c).type.compose(v);
+        if (c < clusteringComponents.size())
+            return clusteringComponents.get(c).type.compose(v);
+        return valueComponents.get(c - clusteringComponents.size()).type.compose(v);
     }
 }

@@ -18,18 +18,18 @@
 package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 import com.google.common.base.Objects;
+
+import org.apache.cassandra.exceptions.InvalidRequestException;
 
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.*;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.Pair;
 
 /**
  * This is essentially like a CompositeType, but it's not primarily meant for comparison, just
@@ -41,12 +41,17 @@ public class TupleType extends AbstractType<ByteBuffer>
 
     public TupleType(List<AbstractType<?>> types)
     {
+        for (int i = 0; i < types.size(); i++)
+            types.set(i, types.get(i).freeze());
         this.types = types;
     }
 
     public static TupleType getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
-        return new TupleType(parser.getTypeParameters());
+        List<AbstractType<?>> types = parser.getTypeParameters();
+        for (int i = 0; i < types.size(); i++)
+            types.set(i, types.get(i).freeze());
+        return new TupleType(types);
     }
 
     public AbstractType<?> type(int i)
@@ -207,6 +212,11 @@ public class TupleType extends AbstractType<ByteBuffer>
     {
         // Split the input on non-escaped ':' characters
         List<String> fieldStrings = AbstractCompositeType.split(source);
+
+        if (fieldStrings.size() > size())
+            throw new MarshalException(String.format("Invalid tuple literal: too many elements. Type %s expects %d but got %d",
+                                                     asCQL3Type(), size(), fieldStrings.size()));
+
         ByteBuffer[] fields = new ByteBuffer[fieldStrings.size()];
         for (int i = 0; i < fieldStrings.size(); i++)
         {
@@ -293,6 +303,6 @@ public class TupleType extends AbstractType<ByteBuffer>
     @Override
     public String toString()
     {
-        return getClass().getName() + TypeParser.stringifyTypeParameters(types);
+        return getClass().getName() + TypeParser.stringifyTypeParameters(types, true);
     }
 }

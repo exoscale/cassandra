@@ -158,8 +158,8 @@ public class CommitLog implements CommitLogMBean
     }
 
     /**
-     * @return a Future representing a ReplayPosition such that when it is ready,
-     * all Allocations created prior to the getContext call will be written to the log
+     * @return a ReplayPosition which, if >= one returned from add(), implies add() was started
+     * (but not necessarily finished) prior to this call
      */
     public ReplayPosition getContext()
     {
@@ -309,6 +309,36 @@ public class CommitLog implements CommitLogMBean
     public long getTotalCommitlogSize()
     {
         return metrics.totalCommitLogSize.value();
+    }
+
+    @Override
+    public String getArchiveCommand()
+    {
+        return archiver.archiveCommand;
+    }
+
+    @Override
+    public String getRestoreCommand()
+    {
+        return archiver.restoreCommand;
+    }
+
+    @Override
+    public String getRestoreDirectories()
+    {
+        return archiver.restoreDirectories;
+    }
+
+    @Override
+    public long getRestorePointInTime()
+    {
+        return archiver.restorePointInTime;
+    }
+
+    @Override
+    public String getRestorePrecision()
+    {
+        return archiver.precision.toString();
     }
 
     public List<String> getActiveSegmentNames()

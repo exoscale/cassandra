@@ -236,7 +236,7 @@ public class CassandraStorage extends AbstractCassandraStorage
                 }
                 catch (Exception e)
                 {
-                    cql3Table = true;                  
+                    cql3Table = true;
                 }
                 if (hasColumn)
                 {
@@ -725,7 +725,7 @@ public class CassandraStorage extends AbstractCassandraStorage
     }
 
     /** get a list of column for the column family */
-    protected List<ColumnDef> getColumnMetadata(Cassandra.Client client) 
+    protected List<ColumnDef> getColumnMetadata(Cassandra.Client client)
     throws TException, CharacterCodingException, InvalidRequestException, ConfigurationException
     {   
         return getColumnMeta(client, true, true);

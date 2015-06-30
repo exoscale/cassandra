@@ -27,10 +27,15 @@ import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.SSTableWriter;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.io.util.DataIntegrityMetadata;
 import org.apache.cassandra.io.util.FileMark;
 import org.apache.cassandra.io.util.SequentialWriter;
+
+import static org.apache.cassandra.io.compress.CompressionMetadata.Writer.OpenType.FINAL;
+import static org.apache.cassandra.io.compress.CompressionMetadata.Writer.OpenType.SHARED;
+import static org.apache.cassandra.io.compress.CompressionMetadata.Writer.OpenType.SHARED_FINAL;
 
 public class CompressedSequentialWriter extends SequentialWriter
 {
@@ -127,7 +132,7 @@ public class CompressedSequentialWriter extends SequentialWriter
             // write data itself
             out.write(compressed.buffer, 0, compressedLength);
             // write corresponding checksum
-            crcMetadata.append(compressed.buffer, 0, compressedLength);
+            crcMetadata.append(compressed.buffer, 0, compressedLength, true);
             lastFlushOffset += compressedLength + 4;
         }
         catch (IOException e)
@@ -137,17 +142,17 @@ public class CompressedSequentialWriter extends SequentialWriter
 
         // next chunk should be written right after current + length of the checksum (int)
         chunkOffset += compressedLength + 4;
+        if (runPostFlush != null)
+            runPostFlush.run();
     }
 
-    public CompressionMetadata openEarly()
+    public CompressionMetadata open(long overrideLength, boolean isFinal)
     {
-        return metadataWriter.openEarly(originalSize, chunkOffset);
-    }
-
-    public CompressionMetadata openAfterClose()
-    {
-        assert current == originalSize;
-        return metadataWriter.openAfterClose(current, chunkOffset);
+        if (overrideLength <= 0)
+            return metadataWriter.open(originalSize, chunkOffset, isFinal ? FINAL : SHARED_FINAL);
+        // we are early opening the file, make sure we open metadata with the correct size
+        assert !isFinal;
+        return metadataWriter.open(overrideLength, chunkOffset, SHARED);
     }
 
     @Override
@@ -224,6 +229,9 @@ public class CompressedSequentialWriter extends SequentialWriter
         bufferOffset = current - validBufferBytes;
         chunkCount = realMark.nextChunkIndex - 1;
 
+        // mark as dirty so we don't lose the bytes on subsequent reBuffer calls
+        isDirty = true;
+
         // truncate data and index file
         truncate(chunkOffset);
         metadataWriter.resetAndTruncate(realMark.nextChunkIndex - 1);
@@ -263,6 +271,12 @@ public class CompressedSequentialWriter extends SequentialWriter
         {
             throw new FSWriteError(e, getPath());
         }
+    }
+
+    public void abort()
+    {
+        super.abort();
+        metadataWriter.abort();
     }
 
     @Override

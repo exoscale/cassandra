@@ -44,6 +44,7 @@ import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.BufferDecoratedKey;
 import org.apache.cassandra.db.ColumnFamily;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -55,7 +56,6 @@ import org.apache.cassandra.db.Row;
 import org.apache.cassandra.db.RowPosition;
 import org.apache.cassandra.db.columniterator.IdentityQueryFilter;
 import org.apache.cassandra.db.compaction.CompactionManager;
-import org.apache.cassandra.db.compaction.ICompactionScanner;
 import org.apache.cassandra.db.composites.Composites;
 import org.apache.cassandra.dht.LocalPartitioner;
 import org.apache.cassandra.dht.LocalToken;
@@ -68,7 +68,6 @@ import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Pair;
-
 import static org.apache.cassandra.Util.cellname;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -188,6 +187,34 @@ public class SSTableReaderTest extends SchemaLoader
     }
 
     @Test
+    public void testReadRateTracking()
+    {
+        // try to make sure CASSANDRA-8239 never happens again
+        Keyspace keyspace = Keyspace.open("Keyspace1");
+        ColumnFamilyStore store = keyspace.getColumnFamilyStore("Standard1");
+
+        for (int j = 0; j < 10; j++)
+        {
+            ByteBuffer key = ByteBufferUtil.bytes(String.valueOf(j));
+            Mutation rm = new Mutation("Keyspace1", key);
+            rm.add("Standard1", cellname("0"), ByteBufferUtil.EMPTY_BYTE_BUFFER, j);
+            rm.apply();
+        }
+        store.forceBlockingFlush();
+
+        SSTableReader sstable = store.getSSTables().iterator().next();
+        assertEquals(0, sstable.getReadMeter().count());
+
+        DecoratedKey key = sstable.partitioner.decorateKey(ByteBufferUtil.bytes("4"));
+        store.getColumnFamily(key, Composites.EMPTY, Composites.EMPTY, false, 100, 100);
+        assertEquals(1, sstable.getReadMeter().count());
+        store.getColumnFamily(key, cellname("0"), cellname("0"), false, 100, 100);
+        assertEquals(2, sstable.getReadMeter().count());
+        store.getColumnFamily(Util.namesQueryFilter(store, key, cellname("0")));
+        assertEquals(3, sstable.getReadMeter().count());
+    }
+
+    @Test
     public void testGetPositionsForRangesWithKeyCache() throws ExecutionException, InterruptedException
     {
         Keyspace keyspace = Keyspace.open("Keyspace1");
@@ -236,6 +263,37 @@ public class SSTableReaderTest extends SchemaLoader
         // check if opening and querying works
         assertIndexQueryWorks(store);
     }
+    public void testGetPositionsKeyCacheStats() throws IOException, ExecutionException, InterruptedException
+    {
+        Keyspace keyspace = Keyspace.open("Keyspace1");
+        ColumnFamilyStore store = keyspace.getColumnFamilyStore("Standard2");
+        CacheService.instance.keyCache.setCapacity(1000);
+
+        // insert data and compact to a single sstable
+        CompactionManager.instance.disableAutoCompaction();
+        for (int j = 0; j < 10; j++)
+        {
+            ByteBuffer key = ByteBufferUtil.bytes(String.valueOf(j));
+            Mutation rm = new Mutation("Keyspace1", key);
+            rm.add("Standard2", cellname("0"), ByteBufferUtil.EMPTY_BYTE_BUFFER, j);
+            rm.apply();
+        }
+        store.forceBlockingFlush();
+        CompactionManager.instance.performMaximal(store);
+
+        SSTableReader sstable = store.getSSTables().iterator().next();
+        sstable.getPosition(k(2), SSTableReader.Operator.EQ);
+        assertEquals(0, sstable.getKeyCacheHit());
+        assertEquals(1, sstable.getBloomFilterTruePositiveCount());
+        sstable.getPosition(k(2), SSTableReader.Operator.EQ);
+        assertEquals(1, sstable.getKeyCacheHit());
+        assertEquals(2, sstable.getBloomFilterTruePositiveCount());
+        sstable.getPosition(k(15), SSTableReader.Operator.EQ);
+        assertEquals(1, sstable.getKeyCacheHit());
+        assertEquals(2, sstable.getBloomFilterTruePositiveCount());
+
+    }
+
 
     @Test
     public void testOpeningSSTable() throws Exception
@@ -276,6 +334,7 @@ public class SSTableReaderTest extends SchemaLoader
         Assert.assertArrayEquals(ByteBufferUtil.getArray(firstKey.getKey()), target.getIndexSummaryKey(0));
         assert target.first.equals(firstKey);
         assert target.last.equals(lastKey);
+        target.selfRef().release();
     }
 
     @Test
@@ -302,6 +361,7 @@ public class SSTableReaderTest extends SchemaLoader
 
         SSTableReader reopened = SSTableReader.open(sstable.descriptor);
         assert reopened.first.getToken() instanceof LocalToken;
+        reopened.selfRef().release();
     }
 
     /** see CASSANDRA-5407 */
@@ -318,7 +378,7 @@ public class SSTableReaderTest extends SchemaLoader
         boolean foundScanner = false;
         for (SSTableReader s : store.getSSTables())
         {
-            ICompactionScanner scanner = s.getScanner(new Range<Token>(t(0), t(1), s.partitioner), null);
+            ISSTableScanner scanner = s.getScanner(new Range<Token>(t(0), t(1), s.partitioner), null);
             scanner.next(); // throws exception pre 5407
             foundScanner = true;
         }
@@ -356,9 +416,12 @@ public class SSTableReaderTest extends SchemaLoader
 
         // re-open the same sstable as it would be during bulk loading
         Set<Component> components = Sets.newHashSet(Component.DATA, Component.PRIMARY_INDEX);
+        if (sstable.components.contains(Component.COMPRESSION_INFO))
+            components.add(Component.COMPRESSION_INFO);
         SSTableReader bulkLoaded = SSTableReader.openForBatch(sstable.descriptor, components, store.metadata, sstable.partitioner);
         sections = bulkLoaded.getPositionsForRanges(ranges);
         assert sections.size() == 1 : "Expected to find range in sstable opened for bulk loading";
+        bulkLoaded.selfRef().release();
     }
 
     @Test
@@ -412,7 +475,7 @@ public class SSTableReaderTest extends SchemaLoader
         }
 
         SSTableReader replacement = sstable.cloneWithNewSummarySamplingLevel(store, 1);
-        store.getDataTracker().replaceReaders(Arrays.asList(sstable), Arrays.asList(replacement), true);
+        store.getDataTracker().replaceWithNewInstances(Arrays.asList(sstable), Arrays.asList(replacement));
         for (Future future : futures)
             future.get();
 
@@ -428,7 +491,7 @@ public class SSTableReaderTest extends SchemaLoader
             clearAndLoad(cfs);
 
         // query using index to see if sstable for secondary index opens
-        IndexExpression expr = new IndexExpression(ByteBufferUtil.bytes("birthdate"), IndexExpression.Operator.EQ, ByteBufferUtil.bytes(1L));
+        IndexExpression expr = new IndexExpression(ByteBufferUtil.bytes("birthdate"), Operator.EQ, ByteBufferUtil.bytes(1L));
         List<IndexExpression> clause = Arrays.asList(expr);
         Range<RowPosition> range = Util.range("", "");
         List<Row> rows = indexedCFS.search(range, clause, new IdentityQueryFilter(), 100);

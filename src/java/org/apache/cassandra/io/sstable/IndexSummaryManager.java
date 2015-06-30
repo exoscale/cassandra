@@ -259,38 +259,39 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
         for (SSTableReader sstable : Iterables.concat(compacting, nonCompacting))
             total += sstable.getIndexSummaryOffHeapSize();
 
+        List<SSTableReader> oldFormatSSTables = new ArrayList<>();
+        for (SSTableReader sstable : nonCompacting)
+        {
+            // We can't change the sampling level of sstables with the old format, because the serialization format
+            // doesn't include the sampling level.  Leave this one as it is.  (See CASSANDRA-8993 for details.)
+            logger.trace("SSTable {} cannot be re-sampled due to old sstable format", sstable);
+            if (!sstable.descriptor.version.hasSamplingLevel)
+                oldFormatSSTables.add(sstable);
+        }
+        nonCompacting.removeAll(oldFormatSSTables);
+
         logger.debug("Beginning redistribution of index summaries for {} sstables with memory pool size {} MB; current spaced used is {} MB",
                      nonCompacting.size(), memoryPoolBytes / 1024L / 1024L, total / 1024.0 / 1024.0);
 
+        final Map<SSTableReader, Double> readRates = new HashMap<>(nonCompacting.size());
         double totalReadsPerSec = 0.0;
         for (SSTableReader sstable : nonCompacting)
         {
-            if (sstable.readMeter != null)
+            if (sstable.getReadMeter() != null)
             {
-                totalReadsPerSec += sstable.readMeter.fifteenMinuteRate();
+                Double readRate = sstable.getReadMeter().fifteenMinuteRate();
+                totalReadsPerSec += readRate;
+                readRates.put(sstable, readRate);
             }
         }
         logger.trace("Total reads/sec across all sstables in index summary resize process: {}", totalReadsPerSec);
 
         // copy and sort by read rates (ascending)
         List<SSTableReader> sstablesByHotness = new ArrayList<>(nonCompacting);
-        Collections.sort(sstablesByHotness, new Comparator<SSTableReader>()
-        {
-            public int compare(SSTableReader o1, SSTableReader o2)
-            {
-                if (o1.readMeter == null && o2.readMeter == null)
-                    return 0;
-                else if (o1.readMeter == null)
-                    return -1;
-                else if (o2.readMeter == null)
-                    return 1;
-                else
-                    return Double.compare(o1.readMeter.fifteenMinuteRate(), o2.readMeter.fifteenMinuteRate());
-            }
-        });
+        Collections.sort(sstablesByHotness, new ReadRateComparator(readRates));
 
         long remainingBytes = memoryPoolBytes;
-        for (SSTableReader sstable : compacting)
+        for (SSTableReader sstable : Iterables.concat(compacting, oldFormatSSTables))
             remainingBytes -= sstable.getIndexSummaryOffHeapSize();
 
         logger.trace("Index summaries for compacting SSTables are using {} MB of space",
@@ -298,7 +299,7 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
         List<SSTableReader> newSSTables = adjustSamplingLevels(sstablesByHotness, totalReadsPerSec, remainingBytes);
 
         total = 0;
-        for (SSTableReader sstable : Iterables.concat(compacting, newSSTables))
+        for (SSTableReader sstable : Iterables.concat(compacting, oldFormatSSTables, newSSTables))
             total += sstable.getIndexSummaryOffHeapSize();
         logger.debug("Completed resizing of index summaries; current approximate memory used: {} MB",
                      total / 1024.0 / 1024.0);
@@ -324,7 +325,7 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
             int minIndexInterval = sstable.metadata.getMinIndexInterval();
             int maxIndexInterval = sstable.metadata.getMaxIndexInterval();
 
-            double readsPerSec = sstable.readMeter == null ? 0.0 : sstable.readMeter.fifteenMinuteRate();
+            double readsPerSec = sstable.getReadMeter() == null ? 0.0 : sstable.getReadMeter().fifteenMinuteRate();
             long idealSpace = Math.round(remainingSpace * (readsPerSec / totalReadsPerSec));
 
             // figure out how many entries our idealSpace would buy us, and pick a new sampling level based on that
@@ -426,7 +427,7 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
 
         for (DataTracker tracker : replacedByTracker.keySet())
         {
-            tracker.replaceReaders(replacedByTracker.get(tracker), replacementsByTracker.get(tracker), true);
+            tracker.replaceWithNewInstances(replacedByTracker.get(tracker), replacementsByTracker.get(tracker));
             newSSTables.addAll(replacementsByTracker.get(tracker));
         }
 
@@ -483,6 +484,32 @@ public class IndexSummaryManager implements IndexSummaryManagerMBean
             this.sstable = sstable;
             this.newSpaceUsed = newSpaceUsed;
             this.newSamplingLevel = newSamplingLevel;
+        }
+    }
+
+    /** Utility class for sorting sstables by their read rates. */
+    private static class ReadRateComparator implements Comparator<SSTableReader>
+    {
+        private final Map<SSTableReader, Double> readRates;
+
+        public ReadRateComparator(Map<SSTableReader, Double> readRates)
+        {
+            this.readRates = readRates;
+        }
+
+        @Override
+        public int compare(SSTableReader o1, SSTableReader o2)
+        {
+            Double readRate1 = readRates.get(o1);
+            Double readRate2 = readRates.get(o2);
+            if (readRate1 == null && readRate2 == null)
+                return 0;
+            else if (readRate1 == null)
+                return -1;
+            else if (readRate2 == null)
+                return 1;
+            else
+                return Double.compare(readRate1, readRate2);
         }
     }
 }

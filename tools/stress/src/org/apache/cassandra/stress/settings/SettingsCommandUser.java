@@ -23,16 +23,11 @@ package org.apache.cassandra.stress.settings;
 
 import java.io.File;
 import java.net.URI;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
-import com.google.common.collect.ImmutableList;
-
-import com.datastax.driver.core.BatchStatement;
 import org.apache.cassandra.stress.Operation;
 import org.apache.cassandra.stress.StressProfile;
 import org.apache.cassandra.stress.generate.DistributionFactory;
@@ -41,8 +36,6 @@ import org.apache.cassandra.stress.generate.SeedManager;
 import org.apache.cassandra.stress.operations.OpDistributionFactory;
 import org.apache.cassandra.stress.operations.SampledOpDistributionFactory;
 import org.apache.cassandra.stress.util.Timer;
-
-import org.apache.commons.math3.util.Pair;
 
 // Settings unique to the mixed command type
 public class SettingsCommandUser extends SettingsCommand
@@ -73,23 +66,35 @@ public class SettingsCommandUser extends SettingsCommand
             throw new IllegalArgumentException("Must specify at least one command with a non-zero ratio");
     }
 
+    public boolean hasInsertOnly()
+    {
+        return ratios.size() == 1 && ratios.containsKey("insert");
+    }
+
     public OpDistributionFactory getFactory(final StressSettings settings)
     {
         final SeedManager seeds = new SeedManager(settings);
         return new SampledOpDistributionFactory<String>(ratios, clustering)
         {
-            protected Operation get(Timer timer, PartitionGenerator generator, String key)
+            protected List<? extends Operation> get(Timer timer, PartitionGenerator generator, String key)
             {
                 if (key.equalsIgnoreCase("insert"))
-                    return profile.getInsert(timer, generator, settings);
-                return profile.getQuery(key, timer, generator, settings);
+                    return Collections.singletonList(profile.getInsert(timer, generator, seeds, settings));
+                if (key.equalsIgnoreCase("validate"))
+                    return profile.getValidate(timer, generator, seeds, settings);
+                return Collections.singletonList(profile.getQuery(key, timer, generator, seeds, settings));
             }
 
             protected PartitionGenerator newGenerator()
             {
-                return profile.newGenerator(settings, seeds);
+                return profile.newGenerator(settings);
             }
         };
+    }
+
+    public void truncateTables(StressSettings settings)
+    {
+        profile.truncateTable(settings);
     }
 
     static final class Options extends GroupedOptions

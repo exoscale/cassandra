@@ -32,22 +32,24 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.Iterables;
 
-import org.apache.cassandra.serializers.MarshalException;
 import org.apache.commons.lang3.StringUtils;
 
 import org.antlr.runtime.tree.Tree;
 import org.apache.cassandra.auth.IAuthenticator;
 import org.apache.cassandra.exceptions.RequestValidationException;
+import org.apache.cassandra.cql3.statements.CFPropDefs;
 import org.apache.cassandra.db.ColumnFamilyStoreMBean;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.SimpleSnitch;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.thrift.*;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.UUIDGen;
 import org.apache.thrift.TBaseHelper;
 import org.apache.thrift.TException;
@@ -196,7 +198,7 @@ public class CliClient
     {
         sessionState.out.println("Welcome to Cassandra CLI version " + FBUtilities.getReleaseVersionString() + "\n");
 
-        sessionState.out.println("The CLI is deprecated and will be removed in Cassandra 3.0.  Consider migrating to cqlsh.");
+        sessionState.out.println("The CLI is deprecated and will be removed in Cassandra 2.2.  Consider migrating to cqlsh.");
         sessionState.out.println("CQL is fully backwards compatible with Thrift data; see http://www.datastax.com/dev/blog/thrift-to-cql3\n");
 
         sessionState.out.println(getHelp().banner);
@@ -1318,12 +1320,14 @@ public class CliClient
                 if (threshold <= 0)
                     throw new RuntimeException("Disabling compaction by setting min/max compaction thresholds to 0 has been deprecated, set compaction_strategy_options={'enabled':false} instead");
                 cfDef.setMin_compaction_threshold(threshold);
+                cfDef.putToCompaction_strategy_options(CFPropDefs.KW_MINCOMPACTIONTHRESHOLD, Integer.toString(threshold));
                 break;
             case MAX_COMPACTION_THRESHOLD:
                 threshold = Integer.parseInt(mValue);
                 if (threshold <= 0)
                     throw new RuntimeException("Disabling compaction by setting min/max compaction thresholds to 0 has been deprecated, set compaction_strategy_options={'enabled':false} instead");
                 cfDef.setMax_compaction_threshold(Integer.parseInt(mValue));
+                cfDef.putToCompaction_strategy_options(CFPropDefs.KW_MAXCOMPACTIONTHRESHOLD, Integer.toString(threshold));
                 break;
             case REPLICATE_ON_WRITE:
                 cfDef.setReplicate_on_write(Boolean.parseBoolean(mValue));
@@ -1658,6 +1662,7 @@ public class CliClient
             }
             catch (Exception ne)
             {
+                JVMStabilityInspector.inspectThrowable(ne);
                 String functions = Function.getFunctionNames();
                 sessionState.out.println("Type '" + defaultType + "' was not found. Available: " + functions
                                          + " Or any class which extends o.a.c.db.marshal.AbstractType.");

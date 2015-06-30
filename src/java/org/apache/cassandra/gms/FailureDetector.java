@@ -27,14 +27,12 @@ import java.util.concurrent.TimeUnit;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.utils.BoundedStatsDeque;
 import org.apache.cassandra.utils.FBUtilities;
 
 /**
@@ -48,6 +46,22 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
     public static final String MBEAN_NAME = "org.apache.cassandra.net:type=FailureDetector";
     private static final int SAMPLE_SIZE = 1000;
     protected static final long INITIAL_VALUE_NANOS = TimeUnit.NANOSECONDS.convert(getInitialValue(), TimeUnit.MILLISECONDS);
+    private static final long DEFAULT_MAX_PAUSE = 5000L * 1000000L; // 5 seconds
+    private static final long MAX_LOCAL_PAUSE_IN_NANOS = getMaxLocalPause();
+    private long lastInterpret = System.nanoTime();
+    private boolean wasPaused = false;
+
+    private static long getMaxLocalPause()
+    {
+        if (System.getProperty("cassandra.max_local_pause_in_ms") != null)
+        {
+            long pause = Long.parseLong(System.getProperty("cassandra.max_local_pause_in_ms"));
+            logger.warn("Overriding max local pause time to {}ms", pause);
+            return pause * 1000000L;
+        }
+        else
+            return DEFAULT_MAX_PAUSE;
+    }
 
     public static final IFailureDetector instance = new FailureDetector();
 
@@ -211,12 +225,12 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
         {
             // avoid adding an empty ArrivalWindow to the Map
             heartbeatWindow = new ArrivalWindow(SAMPLE_SIZE);
-            heartbeatWindow.add(now);
+            heartbeatWindow.add(now, ep);
             arrivalSamples.put(ep, heartbeatWindow);
         }
         else
         {
-            heartbeatWindow.add(now);
+            heartbeatWindow.add(now, ep);
         }
     }
 
@@ -228,6 +242,19 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
             return;
         }
         long now = System.nanoTime();
+        long diff = now - lastInterpret;
+        lastInterpret = now;
+        if (diff > MAX_LOCAL_PAUSE_IN_NANOS)
+        {
+            logger.warn("Not marking nodes down due to local pause of {} > {}", diff, MAX_LOCAL_PAUSE_IN_NANOS);
+            wasPaused = true;
+            return;
+        }
+        if (wasPaused)
+        {
+            wasPaused = false;
+            return;
+        }
         double phi = hbWnd.phi(now);
         if (logger.isTraceEnabled())
             logger.trace("PHI for " + ep + " : " + phi);
@@ -289,11 +316,60 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
     }
 }
 
+/*
+ This class is not thread safe.
+ */
+class ArrayBackedBoundedStats
+{
+    private final long[] arrivalIntervals;
+    private long sum = 0;
+    private int index = 0;
+    private boolean isFilled = false;
+    private volatile double mean = 0;
+
+    public ArrayBackedBoundedStats(final int size)
+    {
+        arrivalIntervals = new long[size];
+    }
+
+    public void add(long interval)
+    {
+        if(index == arrivalIntervals.length)
+        {
+            isFilled = true;
+            index = 0;
+        }
+
+        if(isFilled)
+            sum = sum - arrivalIntervals[index];
+
+        arrivalIntervals[index++] = interval;
+        sum += interval;
+        mean = (double)sum / size();
+    }
+
+    private int size()
+    {
+        return isFilled ? arrivalIntervals.length : index;
+    }
+
+    public double mean()
+    {
+        return mean;
+    }
+
+    public long[] getArrivalIntervals()
+    {
+        return arrivalIntervals;
+    }
+
+}
+
 class ArrivalWindow
 {
     private static final Logger logger = LoggerFactory.getLogger(ArrivalWindow.class);
     private long tLast = 0L;
-    private final BoundedStatsDeque arrivalIntervals;
+    private final ArrayBackedBoundedStats arrivalIntervals;
 
     // this is useless except to provide backwards compatibility in phi_convict_threshold,
     // because everyone seems pretty accustomed to the default of 8, and users who have
@@ -309,7 +385,7 @@ class ArrivalWindow
 
     ArrivalWindow(int size)
     {
-        arrivalIntervals = new BoundedStatsDeque(size);
+        arrivalIntervals = new ArrayBackedBoundedStats(size);
     }
 
     private static long getMaxInterval()
@@ -326,7 +402,7 @@ class ArrivalWindow
         }
     }
 
-    synchronized void add(long value)
+    synchronized void add(long value, InetAddress ep)
     {
         assert tLast >= 0;
         if (tLast > 0L)
@@ -335,7 +411,7 @@ class ArrivalWindow
             if (interArrivalTime <= MAX_INTERVAL_IN_NANO)
                 arrivalIntervals.add(interArrivalTime);
             else
-                logger.debug("Ignoring interval time of {}", interArrivalTime);
+                logger.debug("Ignoring interval time of {} for {}", interArrivalTime, ep);
         }
         else
         {
@@ -355,14 +431,14 @@ class ArrivalWindow
     // see CASSANDRA-2597 for an explanation of the math at work here.
     double phi(long tnow)
     {
-        assert arrivalIntervals.size() > 0 && tLast > 0; // should not be called before any samples arrive
+        assert arrivalIntervals.mean() > 0 && tLast > 0; // should not be called before any samples arrive
         long t = tnow - tLast;
         return t / mean();
     }
 
     public String toString()
     {
-        return StringUtils.join(arrivalIntervals.iterator(), " ");
+        return Arrays.toString(arrivalIntervals.getArrivalIntervals());
     }
 }
 

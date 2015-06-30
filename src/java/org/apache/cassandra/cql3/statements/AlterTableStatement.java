@@ -42,22 +42,22 @@ public class AlterTableStatement extends SchemaAlteringStatement
 
     public final Type oType;
     public final CQL3Type.Raw validator;
-    public final ColumnIdentifier columnName;
+    public final ColumnIdentifier.Raw rawColumnName;
     private final CFPropDefs cfProps;
-    private final Map<ColumnIdentifier, ColumnIdentifier> renames;
+    private final Map<ColumnIdentifier.Raw, ColumnIdentifier.Raw> renames;
     private final boolean isStatic; // Only for ALTER ADD
 
     public AlterTableStatement(CFName name,
                                Type type,
-                               ColumnIdentifier columnName,
+                               ColumnIdentifier.Raw columnName,
                                CQL3Type.Raw validator,
                                CFPropDefs cfProps,
-                               Map<ColumnIdentifier, ColumnIdentifier> renames,
+                               Map<ColumnIdentifier.Raw, ColumnIdentifier.Raw> renames,
                                boolean isStatic)
     {
         super(name);
         this.oType = type;
-        this.columnName = columnName;
+        this.rawColumnName = columnName;
         this.validator = validator; // used only for ADD/ALTER commands
         this.cfProps = cfProps;
         this.renames = renames;
@@ -80,11 +80,18 @@ public class AlterTableStatement extends SchemaAlteringStatement
         CFMetaData cfm = meta.copy();
 
         CQL3Type validator = this.validator == null ? null : this.validator.prepare(keyspace());
+        ColumnIdentifier columnName = null;
+        ColumnDefinition def = null;
+        if (rawColumnName != null)
+        {
+            columnName = rawColumnName.prepare(cfm);
+            def = cfm.getColumnDefinition(columnName);
+        }
 
-        ColumnDefinition def = columnName == null ? null : cfm.getColumnDefinition(columnName);
         switch (oType)
         {
             case ADD:
+                assert columnName != null;
                 if (cfm.comparator.isDense())
                     throw new InvalidRequestException("Cannot add new column to a COMPACT STORAGE table");
 
@@ -113,13 +120,12 @@ public class AlterTableStatement extends SchemaAlteringStatement
                     throw new InvalidRequestException(String.format("Cannot re-add previously dropped counter column %s", columnName));
 
                 AbstractType<?> type = validator.getType();
-                if (type instanceof CollectionType)
+                if (type.isCollection() && type.isMultiCell())
                 {
                     if (!cfm.comparator.supportCollections())
-                        throw new InvalidRequestException("Cannot use collection types with non-composite PRIMARY KEY");
+                        throw new InvalidRequestException("Cannot use non-frozen collections with a non-composite PRIMARY KEY");
                     if (cfm.isSuper())
-                        throw new InvalidRequestException("Cannot use collection types with Super column family");
-
+                        throw new InvalidRequestException("Cannot use non-frozen collections with super column families");
 
                     // If there used to be a collection column with the same name (that has been dropped), it will
                     // still be appear in the ColumnToCollectionType because or reasons explained on #6276. The same
@@ -142,36 +148,37 @@ public class AlterTableStatement extends SchemaAlteringStatement
                 break;
 
             case ALTER:
+                assert columnName != null;
                 if (def == null)
-                    throw new InvalidRequestException(String.format("Cell %s was not found in table %s", columnName, columnFamily()));
+                    throw new InvalidRequestException(String.format("Column %s was not found in table %s", columnName, columnFamily()));
 
+                AbstractType<?> validatorType = validator.getType();
                 switch (def.kind)
                 {
                     case PARTITION_KEY:
-                        AbstractType<?> newType = validator.getType();
-                        if (newType instanceof CounterColumnType)
+                        if (validatorType instanceof CounterColumnType)
                             throw new InvalidRequestException(String.format("counter type is not supported for PRIMARY KEY part %s", columnName));
                         if (cfm.getKeyValidator() instanceof CompositeType)
                         {
                             List<AbstractType<?>> oldTypes = ((CompositeType) cfm.getKeyValidator()).types;
-                            if (!newType.isValueCompatibleWith(oldTypes.get(def.position())))
+                            if (!validatorType.isValueCompatibleWith(oldTypes.get(def.position())))
                                 throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
                                                                                columnName,
                                                                                oldTypes.get(def.position()).asCQL3Type(),
                                                                                validator));
 
                             List<AbstractType<?>> newTypes = new ArrayList<AbstractType<?>>(oldTypes);
-                            newTypes.set(def.position(), newType);
+                            newTypes.set(def.position(), validatorType);
                             cfm.keyValidator(CompositeType.getInstance(newTypes));
                         }
                         else
                         {
-                            if (!newType.isValueCompatibleWith(cfm.getKeyValidator()))
+                            if (!validatorType.isValueCompatibleWith(cfm.getKeyValidator()))
                                 throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
                                                                                columnName,
                                                                                cfm.getKeyValidator().asCQL3Type(),
                                                                                validator));
-                            cfm.keyValidator(newType);
+                            cfm.keyValidator(validatorType);
                         }
                         break;
                     case CLUSTERING_COLUMN:
@@ -179,22 +186,22 @@ public class AlterTableStatement extends SchemaAlteringStatement
                         // Note that CFMetaData.validateCompatibility already validate the change we're about to do. However, the error message it
                         // sends is a bit cryptic for a CQL3 user, so validating here for a sake of returning a better error message
                         // Do note that we need isCompatibleWith here, not just isValueCompatibleWith.
-                        if (!validator.getType().isCompatibleWith(oldType))
+                        if (!validatorType.isCompatibleWith(oldType))
                             throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are not order-compatible.",
                                                                            columnName,
                                                                            oldType.asCQL3Type(),
                                                                            validator));
 
-                        cfm.comparator = cfm.comparator.setSubtype(def.position(), validator.getType());
+                        cfm.comparator = cfm.comparator.setSubtype(def.position(), validatorType);
                         break;
                     case COMPACT_VALUE:
                         // See below
-                        if (!validator.getType().isValueCompatibleWith(cfm.getDefaultValidator()))
+                        if (!validatorType.isValueCompatibleWith(cfm.getDefaultValidator()))
                             throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
                                                                            columnName,
                                                                            cfm.getDefaultValidator().asCQL3Type(),
                                                                            validator));
-                        cfm.defaultValidator(validator.getType());
+                        cfm.defaultValidator(validatorType);
                         break;
                     case REGULAR:
                     case STATIC:
@@ -203,26 +210,27 @@ public class AlterTableStatement extends SchemaAlteringStatement
                         // allow it for CQL3 (see #5882) so validating it explicitly here. We only care about value compatibility
                         // though since we won't compare values (except when there is an index, but that is validated by
                         // ColumnDefinition already).
-                        if (!validator.getType().isValueCompatibleWith(def.type))
+                        if (!validatorType.isValueCompatibleWith(def.type))
                             throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
                                                                            columnName,
                                                                            def.type.asCQL3Type(),
                                                                            validator));
 
                         // For collections, if we alter the type, we need to update the comparator too since it includes
-                        // the type too (note that isValueCompatibleWith above has validated that the need type don't really
+                        // the type too (note that isValueCompatibleWith above has validated that the new type doesn't
                         // change the underlying sorting order, but we still don't want to have a discrepancy between the type
                         // in the comparator and the one in the ColumnDefinition as that would be dodgy).
-                        if (validator.getType() instanceof CollectionType)
-                            cfm.comparator = cfm.comparator.addOrUpdateCollection(def.name, (CollectionType)validator.getType());
+                        if (validatorType.isCollection() && validatorType.isMultiCell())
+                            cfm.comparator = cfm.comparator.addOrUpdateCollection(def.name, (CollectionType)validatorType);
 
                         break;
                 }
                 // In any case, we update the column definition
-                cfm.addOrReplaceColumnDefinition(def.withNewType(validator.getType()));
+                cfm.addOrReplaceColumnDefinition(def.withNewType(validatorType));
                 break;
 
             case DROP:
+                assert columnName != null;
                 if (!cfm.isCQL3Table())
                     throw new InvalidRequestException("Cannot drop columns from a non-CQL3 table");
                 if (def == null)
@@ -252,11 +260,19 @@ public class AlterTableStatement extends SchemaAlteringStatement
                     throw new InvalidRequestException(String.format("ALTER COLUMNFAMILY WITH invoked, but no parameters found"));
 
                 cfProps.validate();
+
+                if (meta.isCounter() && cfProps.getDefaultTimeToLive() > 0)
+                    throw new InvalidRequestException("Cannot set default_time_to_live on a table with counters");
+
                 cfProps.applyToCFMetadata(cfm);
                 break;
             case RENAME:
-                for (Map.Entry<ColumnIdentifier, ColumnIdentifier> entry : renames.entrySet())
-                    cfm.renameColumn(entry.getKey(), entry.getValue());
+                for (Map.Entry<ColumnIdentifier.Raw, ColumnIdentifier.Raw> entry : renames.entrySet())
+                {
+                    ColumnIdentifier from = entry.getKey().prepare(cfm);
+                    ColumnIdentifier to = entry.getValue().prepare(cfm);
+                    cfm.renameColumn(from, to);
+                }
                 break;
         }
 
@@ -269,7 +285,7 @@ public class AlterTableStatement extends SchemaAlteringStatement
         return String.format("AlterTableStatement(name=%s, type=%s, column=%s, validator=%s)",
                              cfName,
                              oType,
-                             columnName,
+                             rawColumnName,
                              validator);
     }
 

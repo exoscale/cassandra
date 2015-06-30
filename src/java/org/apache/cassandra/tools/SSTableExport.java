@@ -264,7 +264,7 @@ public class SSTableExport
         RandomAccessReader dfile = sstable.openDataReader();
         try
         {
-            IPartitioner<?> partitioner = sstable.partitioner;
+            IPartitioner partitioner = sstable.partitioner;
 
             if (excludes != null)
                 toExport.removeAll(Arrays.asList(excludes));
@@ -321,7 +321,7 @@ public class SSTableExport
             excludeSet = new HashSet<String>(Arrays.asList(excludes));
 
         SSTableIdentityIterator row;
-        SSTableScanner scanner = reader.getScanner();
+        ISSTableScanner scanner = reader.getScanner();
         try
         {
             outs.println("[");
@@ -419,7 +419,7 @@ public class SSTableExport
         String[] excludes = cmd.getOptionValues(EXCLUDEKEY_OPTION);
         String ssTableFileName = new File(cmd.getArgs()[0]).getAbsolutePath();
 
-        DatabaseDescriptor.loadSchemas();
+        DatabaseDescriptor.loadSchemas(false);
         Descriptor descriptor = Descriptor.fromFilename(ssTableFileName);
 
         // Start by validating keyspace name

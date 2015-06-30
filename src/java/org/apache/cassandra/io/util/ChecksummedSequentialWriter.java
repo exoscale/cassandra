@@ -37,7 +37,7 @@ public class ChecksummedSequentialWriter extends SequentialWriter
     protected void flushData()
     {
         super.flushData();
-        crcMetadata.append(buffer, 0, validBufferBytes);
+        crcMetadata.append(buffer, 0, validBufferBytes, false);
     }
 
     public void writeFullChecksum(Descriptor descriptor)
@@ -49,5 +49,11 @@ public class ChecksummedSequentialWriter extends SequentialWriter
     {
         super.close();
         crcWriter.close();
+    }
+
+    public void abort()
+    {
+        super.abort();
+        crcWriter.abort();
     }
 }
