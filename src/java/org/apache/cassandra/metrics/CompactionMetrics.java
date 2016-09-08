@@ -18,13 +18,8 @@
 package org.apache.cassandra.metrics;
 
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import com.yammer.metrics.Metrics;
 import com.yammer.metrics.core.Counter;
@@ -36,17 +31,12 @@ import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionManager;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Metrics for compaction.
  */
 public class CompactionMetrics implements CompactionManager.CompactionExecutorStatsCollector
 {
-
-    private static final Logger logger = LoggerFactory.getLogger(CompactionMetrics.class);
-
     public static final MetricNameFactory factory = new DefaultNameFactory("Compaction");
 
     // a synchronized identity set of running tasks to their compaction info
@@ -67,36 +57,15 @@ public class CompactionMetrics implements CompactionManager.CompactionExecutorSt
         {
             public Integer value()
             {
-                // The collector thread is likely to be blocked by compactions
-                // This is a quick fix to avoid losing metrics
-                ExecutorService executor = Executors.newSingleThreadExecutor();
-
-                final Future<Integer> future = executor.submit(new Callable() {
-                    @Override
-                    public Integer call() throws Exception {
-                        int n = 0;
-                        // add estimate number of compactions need to be done
-                        for (String keyspaceName : Schema.instance.getKeyspaces())
-                        {
-                            for (ColumnFamilyStore cfs : Keyspace.open(keyspaceName).getColumnFamilyStores())
-                                n += cfs.getCompactionStrategy().getEstimatedRemainingTasks();
-                        }
-                        // add number of currently running compactions
-                        return n + compactions.size();
-                    }
-                });
-
-                try {
-                    return future.get(20, TimeUnit.SECONDS);
-                } catch (TimeoutException e) {
-                    future.cancel(true);
-                    logger.error("Skipping PendingTasks because some cfs is busy");
-                } catch (Exception othere) {
-                    logger.error("Skipping PendingTasks because of an unexpected exception", othere);
+                int n = 0;
+                // add estimate number of compactions need to be done
+                for (String keyspaceName : Schema.instance.getKeyspaces())
+                {
+                    for (ColumnFamilyStore cfs : Keyspace.open(keyspaceName).getColumnFamilyStores())
+                        n += cfs.getCompactionStrategy().getEstimatedRemainingTasks();
                 }
-
-                executor.shutdownNow();
-                return 21;
+                // add number of currently running compactions
+                return n + compactions.size();
             }
         });
         completedTasks = Metrics.newGauge(factory.createMetricName("CompletedTasks"), new Gauge<Long>()
