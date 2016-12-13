@@ -43,6 +43,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
     @VisibleForTesting
     final LeveledManifest manifest;
     private final int maxSSTableSizeInMB;
+    private int estimatedRemainingTasks;
 
     public LeveledCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
@@ -69,6 +70,8 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
 
         manifest = new LeveledManifest(cfs, this.maxSSTableSizeInMB, localOptions);
         logger.debug("Created {}", manifest);
+
+        estimatedRemainingTasks = manifest.getEstimatedTasks();
     }
 
     public int getLevelSize(int i)
@@ -150,7 +153,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
 
     public int getEstimatedRemainingTasks()
     {
-        return manifest.getEstimatedTasks();
+        return estimatedRemainingTasks;
     }
 
     public long getMaxSSTableBytes()
@@ -221,18 +224,21 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
     public void replaceSSTables(Collection<SSTableReader> removed, Collection<SSTableReader> added)
     {
         manifest.replace(removed, added);
+        estimatedRemainingTasks = manifest.getEstimatedTasks();
     }
 
     @Override
     public void addSSTable(SSTableReader added)
     {
         manifest.add(added);
+        estimatedRemainingTasks = manifest.getEstimatedTasks();
     }
 
     @Override
     public void removeSSTable(SSTableReader sstable)
     {
         manifest.remove(sstable);
+        estimatedRemainingTasks = manifest.getEstimatedTasks();
     }
 
     // Lazily creates SSTableBoundedScanner for sstable that are assumed to be from the

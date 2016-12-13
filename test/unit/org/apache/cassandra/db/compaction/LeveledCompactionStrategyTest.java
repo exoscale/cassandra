@@ -265,6 +265,7 @@ public class LeveledCompactionStrategyTest extends SchemaLoader
         assertEquals(2, unrepaired.manifest.getLevelCount());
         assertTrue(strategy.getSSTableCountPerLevel()[1] > 0);
         assertTrue(strategy.getSSTableCountPerLevel()[2] > 0);
+        assertEstimatedRemainingTasksCount(strategy);
 
         for (SSTableReader sstable : cfs.getSSTables())
             assertFalse(sstable.isRepaired());
@@ -297,6 +298,7 @@ public class LeveledCompactionStrategyTest extends SchemaLoader
         strategy.handleNotification(new SSTableAddedNotification(sstable2), this);
         assertTrue(unrepaired.manifest.getLevel(1).contains(sstable2));
         assertFalse(repaired.manifest.getLevel(1).contains(sstable2));
+        assertEstimatedRemainingTasksCount(strategy);
     }
 
     @Test
@@ -331,5 +333,15 @@ public class LeveledCompactionStrategyTest extends SchemaLoader
         cfs.sstablesRewrite(false, 2);
         assertTrue(strategy.getAllLevelSize()[1] > 0);
 
+    }
+
+    private void assertEstimatedRemainingTasksCount(WrappingCompactionStrategy strategy)
+    {
+        List<AbstractCompactionStrategy> strategies = strategy.getWrappedStrategies();
+        LeveledCompactionStrategy repaired = (LeveledCompactionStrategy) strategies.get(0);
+        LeveledCompactionStrategy unrepaired = (LeveledCompactionStrategy) strategies.get(1);
+        assertEquals(strategy.getEstimatedRemainingTasks(), repaired.getEstimatedRemainingTasks() + unrepaired.getEstimatedRemainingTasks());
+        assertEquals(repaired.getEstimatedRemainingTasks(), repaired.manifest.getEstimatedTasks());
+        assertEquals(unrepaired.getEstimatedRemainingTasks(), unrepaired.manifest.getEstimatedTasks());
     }
 }
