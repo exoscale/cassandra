@@ -9,6 +9,7 @@ ANT = /usr/bin/ant
 VERSION = $(shell dpkg-parsechangelog | sed -ne 's/^Version: \([^-|~|+]*\).*/\1/p')
 
 export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 
 test:
 	dh_testdir
