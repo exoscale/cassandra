@@ -3,7 +3,7 @@ Section: misc
 Priority: extra
 Maintainer: Eric Evans <eevans@apache.org>
 Uploaders: Sylvain Lebresne <slebresne@apache.org>
-Build-Depends: debhelper (< 9.20130720~),
+Build-Depends: debhelper (>= 5),
                oracle-java8-jdk | java8-jdk,
                ant-optional (>= 1.7),
                python-dev (>= 2.7),
