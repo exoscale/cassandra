@@ -33,7 +33,7 @@ build-stamp: patch-stamp
 
 	$(ANT) jar
 	cd pylib && python setup.py install --no-compile --install-layout deb \
-		--root $(CURDIR)/debian/cassandra
+		--root $(CURDIR)/debian/cassandra-2
 
 	touch build-stamp
 
@@ -59,14 +59,14 @@ install: build
 	dh_link usr/share/cassandra/apache-cassandra-$(VERSION).jar \
 		usr/share/cassandra/apache-cassandra.jar
 
-	cd debian/cassandra/etc/sysctl.d && mv cassandra-sysctl.conf cassandra.conf
+	cd debian/cassandra-2/etc/sysctl.d && mv cassandra-sysctl.conf cassandra.conf
 
 # Build architecture-independent files here.
 binary-indep: build install
 	dh_testdir
 	dh_testroot
 	dh_installchangelogs
-	dh_installinit -u'start 50 2 3 4 5 . stop 50 0 1 6 .'
+	dh_installinit --name=cassandra -u'start 50 2 3 4 5 . stop 50 0 1 6 .'
 	dh_installdocs README.asc CHANGES.txt NEWS.txt
 	dh_installexamples tools/*.yaml
 	dh_bash-completion
