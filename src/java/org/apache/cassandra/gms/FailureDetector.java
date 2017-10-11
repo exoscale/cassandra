@@ -268,8 +268,9 @@ public class FailureDetector implements IFailureDetector, FailureDetectorMBean
             heartbeatWindow.add(now, ep);
         }
 
-        if (logger.isTraceEnabled() && heartbeatWindow != null)
-            logger.trace("Average for {} is {}", ep, heartbeatWindow.mean());
+        // Exoscale disable as generating too much logs
+        //if (logger.isTraceEnabled() && heartbeatWindow != null)
+        //    logger.info("Average for {} is {}", ep, heartbeatWindow.mean());
     }
 
     public void interpret(InetAddress ep)
