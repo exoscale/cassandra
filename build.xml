@@ -1177,32 +1177,6 @@
       </rat:report>
     </target>
 
-  <target name="build-test" depends="build" description="Compile test classes">
-    <javac
-     debug="true"
-     debuglevel="${debuglevel}"
-     encoding="utf-8"
-     destdir="${test.classes}"
-     includeantruntime="true"
-     source="${source.version}" 
-     target="${target.version}">
-     <classpath>
-        <path refid="cassandra.classpath"/>
-     </classpath>
-	 <compilerarg value="-XDignore.symbol.file"/>
-     <src path="${test.unit.src}"/>
-     <src path="${test.long.src}"/>
-     <src path="${test.burn.src}"/>
-     <src path="${test.pig.src}"/>
-     <src path="${test.microbench.src}"/>
-    </javac>
-
-    <!-- Non-java resources needed by the test suite -->
-    <copy todir="${test.classes}">
-      <fileset dir="${test.resources}"/>
-    </copy>
-  </target>
-
   <!-- Defines how to run a set of tests. If you change the defaults for attributes
        you should also update them in testmacro.,
        The two are split because the helper doesn't generate
