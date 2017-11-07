@@ -5190,7 +5190,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         logger.info("Updated hinted_handoff_throttle_in_kb to {}", throttleInKB);
     }
 
-    public static List<PartitionPosition> getDiskBoundaries(ColumnFamilyStore cfs, Directories.DataDirectory[] directories)
+    public static List<PartitionPosition> getDiskBoundaries(ColumnFamilyStore cfs)
     {
         if (!cfs.getPartitioner().splitter().isPresent())
             return null;
@@ -5214,12 +5214,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             return null;
         List<Range<Token>> localRanges = Range.sort(lr);
 
-        return getDiskBoundaries(localRanges, cfs.getPartitioner(), directories);
-    }
-
-    public static List<PartitionPosition> getDiskBoundaries(ColumnFamilyStore cfs)
-    {
-        return getDiskBoundaries(cfs, cfs.getDirectories().getWriteableLocations());
+        return getDiskBoundaries(localRanges, cfs.getPartitioner(), cfs.getDirectories().getWriteableLocations());
     }
 
     /**

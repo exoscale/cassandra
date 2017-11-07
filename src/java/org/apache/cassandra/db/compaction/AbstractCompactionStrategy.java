@@ -81,8 +81,6 @@ public abstract class AbstractCompactionStrategy
     protected boolean disableTombstoneCompactions = false;
     protected boolean logAll = true;
 
-    private final Directories directories;
-
     /**
      * pause/resume/getNextBackgroundTask must synchronize.  This guarantees that after pause completes,
      * no new tasks will be generated; or put another way, pause can't run until in-progress tasks are
@@ -124,13 +122,6 @@ public abstract class AbstractCompactionStrategy
             tombstoneCompactionInterval = DEFAULT_TOMBSTONE_COMPACTION_INTERVAL;
             uncheckedTombstoneCompaction = DEFAULT_UNCHECKED_TOMBSTONE_COMPACTION_OPTION;
         }
-
-        directories = cfs.getDirectories();
-    }
-
-    public Directories getDirectories()
-    {
-        return directories;
     }
 
     /**
@@ -236,19 +227,6 @@ public abstract class AbstractCompactionStrategy
     public long getMemtableReservedSize()
     {
         return 0;
-    }
-
-    /**
-     * Handle a flushed memtable.
-     *
-     * @param memtable the flushed memtable
-     * @param sstables the written sstables. can be null or empty if the memtable was clean.
-     */
-    public void replaceFlushed(Memtable memtable, Collection<SSTableReader> sstables)
-    {
-        cfs.getTracker().replaceFlushed(memtable, sstables);
-        if (sstables != null && !sstables.isEmpty())
-            CompactionManager.instance.submitBackground(cfs);
     }
 
     /**

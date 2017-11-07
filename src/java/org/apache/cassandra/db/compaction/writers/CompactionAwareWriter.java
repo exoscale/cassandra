@@ -89,7 +89,7 @@ public abstract class CompactionAwareWriter extends Transactional.AbstractTransa
         sstableWriter = SSTableRewriter.construct(cfs, txn, keepOriginals, maxAge);
         minRepairedAt = CompactionTask.getMinRepairedAt(nonExpiredSSTables);
         locations = cfs.getDirectories().getWriteableLocations();
-        diskBoundaries = StorageService.getDiskBoundaries(cfs);
+        diskBoundaries = cfs.getCompactionStrategyManager().getDiskBoundaries();
         locationIndex = -1;
     }
 

@@ -90,7 +90,8 @@ public class Directories
     public static final String TMP_SUBDIR = "tmp";
     public static final String SECONDARY_INDEX_NAME_SEPARATOR = ".";
 
-    public static final DataDirectory[] dataDirectories;
+    @VisibleForTesting
+    public static DataDirectory[] dataDirectories;
 
     static
     {
@@ -578,6 +579,13 @@ public class Directories
         public int hashCode()
         {
             return location.hashCode();
+        }
+
+        public String toString()
+        {
+            return "DataDirectory{" +
+                   "location=" + location +
+                   '}';
         }
     }
 

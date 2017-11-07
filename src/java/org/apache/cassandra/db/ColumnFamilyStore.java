@@ -272,7 +272,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 cfs.crcCheckChance = new DefaultValue(metadata.params.crcCheckChance);
 
         compactionStrategyManager.maybeReload(metadata);
-        directories = compactionStrategyManager.getDirectories();
 
         scheduleFlush();
 
@@ -430,12 +429,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         else
             this.directories = new Directories(metadata, Directories.dataDirectories);
 
-
         // compaction strategy should be created after the CFS has been prepared
         compactionStrategyManager = new CompactionStrategyManager(this);
-
-        // Since compaction can re-define data dir we need to reinit directories
-        this.directories = compactionStrategyManager.getDirectories();
 
         if (maxCompactionThreshold.value() <= 0 || minCompactionThreshold.value() <=0)
         {
@@ -1444,7 +1439,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public void addSSTables(Collection<SSTableReader> sstables)
     {
         data.addSSTables(sstables);
-        CompactionManager.instance.submitBackground(this);
     }
 
     /**
@@ -1584,7 +1578,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     void replaceFlushed(Memtable memtable, Collection<SSTableReader> sstables)
     {
-        compactionStrategyManager.replaceFlushed(memtable, sstables);
+        data.replaceFlushed(memtable, sstables);
     }
 
     public boolean isValid()

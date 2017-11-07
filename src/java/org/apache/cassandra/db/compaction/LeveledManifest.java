@@ -19,10 +19,12 @@ package org.apache.cassandra.db.compaction;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
@@ -42,6 +44,8 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
+
+import static com.google.common.collect.Iterables.filter;
 
 public class LeveledManifest
 {
@@ -169,8 +173,23 @@ public class LeveledManifest
             {
                 logger.error("Could not change sstable level - adding it at level 0 anyway, we will find it at restart.", e);
             }
-            generations[0].add(reader);
+            if (!contains(reader))
+            {
+                generations[0].add(reader);
+            }
+            else
+            {
+                // An SSTable being added multiple times to this manifest indicates a programming error, but we don't
+                // throw an AssertionError because this shouldn't break the compaction strategy. Instead we log it
+                // together with a RuntimeException so the stack is print for troubleshooting if this ever happens.
+                logger.warn("SSTable {} is already present on leveled manifest and should not be re-added.", reader, new RuntimeException());
+            }
         }
+    }
+
+    private boolean contains(SSTableReader reader)
+    {
+        return Arrays.stream(generations).flatMap(s -> s.stream()).collect(Collectors.toSet()).contains(reader);
     }
 
     public synchronized void replace(Collection<SSTableReader> removed, Collection<SSTableReader> added)
@@ -351,7 +370,7 @@ public class LeveledManifest
                 continue; // mostly this just avoids polluting the debug log with zero scores
             // we want to calculate score excluding compacting ones
             Set<SSTableReader> sstablesInLevel = Sets.newHashSet(sstables);
-            Set<SSTableReader> remaining = Sets.difference(sstablesInLevel, cfs.getTracker().getCompacting());
+            Set<SSTableReader> remaining = ImmutableSet.copyOf(filter(cfs.getUncompactingSSTables(), sstablesInLevel::contains));
             double score = (double) SSTableReader.getTotalBytes(remaining) / (double)maxBytesForLevel(i, maxSSTableSizeInBytes);
             logger.trace("Compaction score for level {} is {}", i, score);
 

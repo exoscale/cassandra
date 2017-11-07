@@ -61,7 +61,7 @@ public class RangeAwareSSTableWriter implements SSTableMultiWriter
         this.format = format;
         this.txn = txn;
         this.header = header;
-        boundaries = StorageService.getDiskBoundaries(cfs, directories);
+        boundaries = StorageService.getDiskBoundaries(cfs);
         if (boundaries == null)
         {
             Directories.DataDirectory localDir = cfs.getDirectories().getWriteableLocation(totalSize);
