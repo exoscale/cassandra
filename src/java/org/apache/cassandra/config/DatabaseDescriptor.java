@@ -409,6 +409,10 @@ public class DatabaseDescriptor
         if (conf.file_cache_size_in_mb == null)
             conf.file_cache_size_in_mb = Math.min(512, (int) (Runtime.getRuntime().maxMemory() / (4 * 1048576)));
 
+        // round down for SSDs and round up for spinning disks
+        if (conf.file_cache_round_up == null)
+            conf.file_cache_round_up = conf.disk_optimization_strategy == Config.DiskOptimizationStrategy.spinning;
+
         if (conf.memtable_offheap_space_in_mb == null)
             conf.memtable_offheap_space_in_mb = (int) (Runtime.getRuntime().maxMemory() / (4 * 1048576));
         if (conf.memtable_offheap_space_in_mb < 0)
@@ -2060,6 +2064,18 @@ public class DatabaseDescriptor
         return conf.file_cache_size_in_mb;
     }
 
+    public static boolean getFileCacheRoundUp()
+    {
+        if (conf.file_cache_round_up == null)
+        {
+            // In client mode the value is not set.
+            assert DatabaseDescriptor.isClientInitialized();
+            return false;
+        }
+
+        return conf.file_cache_round_up;
+    }
+
     public static boolean getBufferPoolUseHeapIfExhausted()
     {
         return conf.buffer_pool_use_heap_if_exhausted;
@@ -2354,6 +2370,11 @@ public class DatabaseDescriptor
     public static void setUserDefinedFunctionWarnTimeout(long userDefinedFunctionWarnTimeout)
     {
         conf.user_defined_function_warn_timeout = userDefinedFunctionWarnTimeout;
+    }
+
+    public static boolean enableMaterializedViews()
+    {
+        return conf.enable_materialized_views;
     }
 
     public static long getUserDefinedFunctionFailTimeout()

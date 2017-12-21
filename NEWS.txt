@@ -18,7 +18,30 @@ using the provided 'sstableupgrade' tool.
 
 Upgrading
 ---------
-    - Nothing specific to this release, but please see previous upgrading sections.
+    - Cassandra is now relying on the JVM options to properly shutdown on OutOfMemoryError. By default it will
+      rely on the OnOutOfMemoryError option as the ExitOnOutOfMemoryError and CrashOnOutOfMemoryError options
+      are not supported by the older 1.7 and 1.8 JVMs. A warning will be logged at startup if none of those JVM
+      options are used. See CASSANDRA-13006 for more details
+    - Cassandra is not logging anymore by default an Heap histogram on OutOfMemoryError. To enable that behavior
+      set the 'cassandra.printHeapHistogramOnOutOfMemoryError' System property to 'true'. See CASSANDRA-13006
+      for more details.
+    - Upgrades from 3.0 might have produced unnecessary schema migrations while
+      there was at least one 3.0 node in the cluster. It is therefore highly
+      recommended to upgrade from 3.0 to at least 3.11.2. The root cause of
+      this schema mismatch was a difference in the way how schema digests were computed
+      in 3.0 and 3.11.2. To mitigate this issue, 3.11.2 and newer announce
+      3.0 compatible digests as long as there is at least one 3.0 node in the
+      cluster. Once all nodes have been upgraded, the "real" schema version will be
+      announced. Note: this fix is only necessary in 3.11.2 and therefore only applies
+      to 3.11. (CASSANDRA-14109)
+
+Materialized Views
+-------------------
+   - Following a discussion regarding concerns about the design and safety of Materialized Views, the C* development
+     community no longer recommends them for production use, and considers them experimental. Warnings messages will
+     now be logged when they are created. (See https://www.mail-archive.com/dev@cassandra.apache.org/msg11511.html)
+   - An 'enable_materialized_views' flag has been added to cassandra.yaml to allow operators to prevent creation of
+     views
 
 3.11.1
 ======
@@ -32,6 +55,26 @@ Upgrading
       storage format change, see CASSANDRA-13826. For append-only use case, you
       may still use this feature with a startup flag: "-Dcassandra.mv.allow_filtering_nonkey_columns_unsafe=true"
 
+Compact Storage (only when upgrading from 3.X or any version lower than 3.0.15)
+---------------
+    - Starting version 4.0, Thrift and COMPACT STORAGE is no longer supported.
+      'ALTER ... DROP COMPACT STORAGE' statement makes Compact Tables CQL-compatible,
+      exposing internal structure of Thrift/Compact Tables. You can find more details
+      on exposed internal structure under: 
+      http://cassandra.apache.org/doc/latest/cql/appendices.html#appendix-c-dropping-compact-storage
+
+      For uninterrupted cluster upgrades, drivers now support 'NO_COMPACT' startup option.
+      Supplying this flag will have same effect as 'DROP COMPACT STORAGE', but only for the
+      current connection.
+
+      In order to upgrade, clients supporting a non-compact schema view can be rolled out
+      gradually. When all the clients are updated 'ALTER ... DROP COMPACT STORAGE' can be
+      executed. After dropping compact storage, ’NO_COMPACT' option will have no effect
+      after that.
+
+
+Materialized Views
+-------------------
 
 Materialized Views (only when upgrading from 3.X or any version lower than 3.0.15)
 ---------------------------------------------------------------------------------------
