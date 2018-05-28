@@ -7,6 +7,8 @@ include /usr/share/dpatch/dpatch.make
 
 ANT = /usr/bin/ant
 VERSION = $(shell dpkg-parsechangelog | sed -ne 's/^Version: \([^-|~|+]*\).*/\1/p')
+PKV = $(shell dpkg-parsechangelog -SVersion)
+DISTRIBUTION = $(shell lsb_release -sc)
 
 test:
 	dh_testdir
@@ -69,7 +71,7 @@ binary-indep: build install
 	dh_compress
 	dh_fixperms
 	dh_installdeb
-	dh_gencontrol
+	dh_gencontrol -- -v$(PKV)-0~$(DISTRIBUTION)+exo1
 	dh_md5sums
 	dh_builddeb
 
