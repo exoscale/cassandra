@@ -51,7 +51,6 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.config.SchemaConstants;
-import org.apache.cassandra.cql3.functions.ThreadAwareSecurityManager;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.commitlog.CommitLog;
@@ -61,6 +60,7 @@ import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.hints.LegacyHintsMigrator;
 import org.apache.cassandra.io.FSError;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
+import org.apache.cassandra.io.sstable.SSTableHeaderFix;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.CassandraMetricsRegistry;
 import org.apache.cassandra.metrics.DefaultNameFactory;
@@ -69,6 +69,7 @@ import org.apache.cassandra.schema.LegacySchemaMigrator;
 import org.apache.cassandra.thrift.ThriftServer;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
+import org.apache.cassandra.security.ThreadAwareSecurityManager;
 
 /**
  * The <code>CassandraDaemon</code> is an abstraction for a Cassandra daemon
@@ -81,8 +82,14 @@ public class CassandraDaemon
     public static final String MBEAN_NAME = "org.apache.cassandra.db:type=NativeAccess";
 
     private static final Logger logger;
-    static
+
+    @VisibleForTesting
+    public static CassandraDaemon getInstanceForTesting()
     {
+        return instance;
+    }
+
+    static {
         // Need to register metrics before instrumented appender is created(first access to LoggerFactory).
         SharedMetricRegistries.getOrCreate("logback-metrics").addListener(new MetricRegistryListener.Base()
         {
@@ -261,6 +268,8 @@ public class CassandraDaemon
         // load schema from disk
         Schema.instance.loadFromDisk();
 
+        SSTableHeaderFix.fixNonFrozenUDTIfUpgradeFrom30();
+
         // clean up debris in the rest of the keyspaces
         for (String keyspaceName : Schema.instance.getKeyspaces())
         {
@@ -338,6 +347,15 @@ public class CassandraDaemon
         LegacyBatchlogMigrator.migrate();
 
         SystemKeyspace.finishStartup();
+
+        // Clean up system.size_estimates entries left lying around from missed keyspace drops (CASSANDRA-14905)
+        StorageService.instance.cleanupSizeEstimates();
+
+        // schedule periodic dumps of table size estimates into SystemKeyspace.SIZE_ESTIMATES_CF
+        // set cassandra.size_recorder_interval to 0 to disable
+        int sizeRecorderInterval = Integer.getInteger("cassandra.size_recorder_interval", 5 * 60);
+        if (sizeRecorderInterval > 0)
+            ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(SizeEstimatesRecorder.instance, 30, sizeRecorderInterval, TimeUnit.SECONDS);
 
         // Prepared statements
         QueryProcessor.preloadPreparedStatement();
@@ -419,22 +437,20 @@ public class CassandraDaemon
         // due to scheduling errors or race conditions
         ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(ColumnFamilyStore.getBackgroundCompactionTaskSubmitter(), 5, 1, TimeUnit.MINUTES);
 
-        // schedule periodic dumps of table size estimates into SystemKeyspace.SIZE_ESTIMATES_CF
-        // set cassandra.size_recorder_interval to 0 to disable
-        int sizeRecorderInterval = Integer.getInteger("cassandra.size_recorder_interval", 5 * 60);
-        if (sizeRecorderInterval > 0)
-            ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(SizeEstimatesRecorder.instance, 30, sizeRecorderInterval, TimeUnit.SECONDS);
-
         // Thrift
         InetAddress rpcAddr = DatabaseDescriptor.getRpcAddress();
         int rpcPort = DatabaseDescriptor.getRpcPort();
         int listenBacklog = DatabaseDescriptor.getRpcListenBacklog();
         thriftServer = new ThriftServer(rpcAddr, rpcPort, listenBacklog);
-
-        // Native transport
-        nativeTransportService = new NativeTransportService();
+        initializeNativeTransport();
 
         completeSetup();
+    }
+
+    public void initializeNativeTransport()
+    {
+        // Native transport
+        nativeTransportService = new NativeTransportService();
     }
 
     /*
@@ -513,6 +529,17 @@ public class CassandraDaemon
      */
     public void start()
     {
+        try
+        {
+            validateTransportsCanStart();
+        }
+        catch (IllegalStateException isx)
+        {
+            // If there are any errors, we just log and return in this case
+            logger.info(isx.getMessage());
+            return;
+        }
+
         String nativeFlag = System.getProperty("cassandra.start_native_transport");
         if ((nativeFlag != null && Boolean.parseBoolean(nativeFlag)) || (nativeFlag == null && DatabaseDescriptor.startNativeTransport()))
         {
@@ -563,6 +590,16 @@ public class CassandraDaemon
         }
     }
 
+    @VisibleForTesting
+    public void destroyNativeTransport() throws InterruptedException
+    {
+        if (nativeTransportService != null)
+        {
+            nativeTransportService.destroy();
+            nativeTransportService = null;
+        }
+    }
+
 
     /**
      * Clean up all resources obtained during the lifetime of the daemon. This
@@ -581,16 +618,7 @@ public class CassandraDaemon
         {
             applyConfig();
 
-            try
-            {
-                MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-                mbs.registerMBean(new StandardMBean(new NativeAccess(), NativeAccessMBean.class), new ObjectName(MBEAN_NAME));
-            }
-            catch (Exception e)
-            {
-                logger.error("error registering MBean {}", MBEAN_NAME, e);
-                //Allow the server to start even if the bean can't be registered
-            }
+            MBeanWrapper.instance.registerMBean(new StandardMBean(new NativeAccess(), NativeAccessMBean.class), MBEAN_NAME, MBeanWrapper.OnException.LOG);
 
             if (FBUtilities.isWindows)
             {
@@ -619,7 +647,7 @@ public class CassandraDaemon
         catch (Throwable e)
         {
             boolean logStackTrace =
-                    e instanceof ConfigurationException ? ((ConfigurationException)e).logStackTrace : true;
+            e instanceof ConfigurationException ? ((ConfigurationException)e).logStackTrace : true;
 
             System.out.println("Exception (" + e.getClass().getName() + ") encountered during startup: " + e.getMessage());
 
@@ -647,8 +675,36 @@ public class CassandraDaemon
         DatabaseDescriptor.daemonInitialization();
     }
 
+    public void validateTransportsCanStart()
+    {
+        // We only start transports if bootstrap has completed and we're not in survey mode, OR if we are in
+        // survey mode and streaming has completed but we're not using auth.
+        // OR if we have not joined the ring yet.
+        if (StorageService.instance.hasJoined())
+        {
+            if (StorageService.instance.isSurveyMode())
+            {
+                if (StorageService.instance.isBootstrapMode() || DatabaseDescriptor.getAuthenticator().requireAuthentication())
+                {
+                    throw new IllegalStateException("Not starting client transports in write_survey mode as it's bootstrapping or " +
+                                                    "auth is enabled");
+                }
+            }
+            else
+            {
+                if (!SystemKeyspace.bootstrapComplete())
+                {
+                    throw new IllegalStateException("Node is not yet bootstrapped completely. Use nodetool to check bootstrap" +
+                                                    " state and resume. For more, see `nodetool help bootstrap`");
+                }
+            }
+        }
+    }
+
     public void startNativeTransport()
     {
+        validateTransportsCanStart();
+
         if (nativeTransportService == null)
             throw new IllegalStateException("setup() must be called first for CassandraDaemon");
         else
@@ -666,6 +722,16 @@ public class CassandraDaemon
         return nativeTransportService != null ? nativeTransportService.isRunning() : false;
     }
 
+    public int getMaxNativeProtocolVersion()
+    {
+        return nativeTransportService.getMaxProtocolVersion();
+    }
+
+    public void refreshMaxNativeProtocolVersion()
+    {
+        if (nativeTransportService != null)
+            nativeTransportService.refreshMaxNegotiableProtocolVersion();
+    }
 
     /**
      * A convenience method to stop and destroy the daemon in one shot.

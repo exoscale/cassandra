@@ -35,6 +35,7 @@ import javax.annotation.Nullable;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
+import com.google.common.util.concurrent.Uninterruptibles;
 
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -61,6 +62,7 @@ import org.apache.cassandra.io.sstable.metadata.ValidationMetadata;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.net.AsyncOneResponse;
 
 import org.codehaus.jackson.JsonFactory;
@@ -72,6 +74,8 @@ public class FBUtilities
 
     private static final ObjectMapper jsonMapper = new ObjectMapper(new JsonFactory());
 
+    public static final String UNKNOWN_RELEASE_VERSION = "Unknown";
+
     public static final BigInteger TWO = new BigInteger("2");
     private static final String DEFAULT_TRIGGER_DIR = "triggers";
 
@@ -82,6 +86,8 @@ public class FBUtilities
     private static volatile InetAddress localInetAddress;
     private static volatile InetAddress broadcastInetAddress;
     private static volatile InetAddress broadcastRpcAddress;
+
+    private static volatile String previousReleaseVersionString;
 
     public static int getAvailableProcessors()
     {
@@ -150,6 +156,14 @@ public class FBUtilities
         return broadcastInetAddress;
     }
 
+    /**
+     * <b>THIS IS FOR TESTING ONLY!!</b>
+     */
+    @VisibleForTesting
+    public static void setBroadcastInetAddress(InetAddress addr)
+    {
+        broadcastInetAddress = addr;
+    }
 
     public static InetAddress getBroadcastRpcAddress()
     {
@@ -323,13 +337,23 @@ public class FBUtilities
         return triggerDir;
     }
 
+    public static void setPreviousReleaseVersionString(String previousReleaseVersionString)
+    {
+        FBUtilities.previousReleaseVersionString = previousReleaseVersionString;
+    }
+
+    public static String getPreviousReleaseVersionString()
+    {
+        return previousReleaseVersionString;
+    }
+
     public static String getReleaseVersionString()
     {
         try (InputStream in = FBUtilities.class.getClassLoader().getResourceAsStream("org/apache/cassandra/config/version.properties"))
         {
             if (in == null)
             {
-                return System.getProperty("cassandra.releaseVersion", "Unknown");
+                return System.getProperty("cassandra.releaseVersion", UNKNOWN_RELEASE_VERSION);
             }
             Properties props = new Properties();
             props.load(in);
@@ -341,6 +365,16 @@ public class FBUtilities
             logger.warn("Unable to load version.properties", e);
             return "debug version";
         }
+    }
+
+    public static String getReleaseVersionMajor()
+    {
+        String releaseVersion = FBUtilities.getReleaseVersionString();
+        if (FBUtilities.UNKNOWN_RELEASE_VERSION.equals(releaseVersion))
+        {
+            throw new AssertionError("Release version is unknown");
+        }
+        return releaseVersion.substring(0, releaseVersion.indexOf('.'));
     }
 
     public static long timestampMicros()
@@ -357,13 +391,37 @@ public class FBUtilities
 
     public static <T> List<T> waitOnFutures(Iterable<? extends Future<? extends T>> futures)
     {
+        return waitOnFutures(futures, -1, null);
+    }
+
+    /**
+     * Block for a collection of futures, with optional timeout.
+     *
+     * @param futures
+     * @param timeout The number of units to wait in total. If this value is less than or equal to zero,
+     *           no tiemout value will be passed to {@link Future#get()}.
+     * @param units The units of timeout.
+     */
+    public static <T> List<T> waitOnFutures(Iterable<? extends Future<? extends T>> futures, long timeout, TimeUnit units)
+    {
+        long endNanos = 0;
+        if (timeout > 0)
+            endNanos = System.nanoTime() + units.toNanos(timeout);
         List<T> results = new ArrayList<>();
         Throwable fail = null;
         for (Future<? extends T> f : futures)
         {
             try
             {
-                results.add(f.get());
+                if (endNanos == 0)
+                {
+                    results.add(f.get());
+                }
+                else
+                {
+                    long waitFor = Math.max(1, endNanos - System.nanoTime());
+                    results.add(f.get(waitFor, TimeUnit.NANOSECONDS));
+                }
             }
             catch (Throwable t)
             {
@@ -396,6 +454,41 @@ public class FBUtilities
             result.get(ms, TimeUnit.MILLISECONDS);
     }
 
+    public static <T> Future<? extends T> waitOnFirstFuture(Iterable<? extends Future<? extends T>> futures)
+    {
+        return waitOnFirstFuture(futures, 100);
+    }
+    /**
+     * Only wait for the first future to finish from a list of futures. Will block until at least 1 future finishes.
+     * @param futures The futures to wait on
+     * @return future that completed.
+     */
+    public static <T> Future<? extends T> waitOnFirstFuture(Iterable<? extends Future<? extends T>> futures, long delay)
+    {
+        while (true)
+        {
+            for (Future<? extends T> f : futures)
+            {
+                if (f.isDone())
+                {
+                    try
+                    {
+                        f.get();
+                    }
+                    catch (InterruptedException e)
+                    {
+                        throw new AssertionError(e);
+                    }
+                    catch (ExecutionException e)
+                    {
+                        throw new RuntimeException(e);
+                    }
+                    return f;
+                }
+            }
+            Uninterruptibles.sleepUninterruptibly(delay, TimeUnit.MILLISECONDS);
+        }
+    }
     /**
      * Create a new instance of a partitioner defined in an SSTable Descriptor
      * @param desc Descriptor of an sstable
@@ -825,7 +918,7 @@ public class FBUtilities
         updateWithByte(digest, val ? 0 : 1);
     }
 
-    public static void closeAll(List<? extends AutoCloseable> l) throws Exception
+    public static void closeAll(Collection<? extends AutoCloseable> l) throws Exception
     {
         Exception toThrow = null;
         for (AutoCloseable c : l)

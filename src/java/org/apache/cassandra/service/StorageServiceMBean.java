@@ -247,6 +247,11 @@ public interface StorageServiceMBean extends NotificationEmitter
     public void refreshSizeEstimates() throws ExecutionException;
 
     /**
+     * Removes extraneous entries in system.size_estimates.
+     */
+    public void cleanupSizeEstimates();
+
+    /**
      * Forces major compaction of a single keyspace
      */
     public void forceKeyspaceCompaction(boolean splitOutput, String keyspaceName, String... tableNames) throws IOException, ExecutionException, InterruptedException;
@@ -375,6 +380,10 @@ public interface StorageServiceMBean extends NotificationEmitter
     public int forceRepairRangeAsync(String beginToken, String endToken, String keyspaceName, boolean isSequential, boolean isLocal, boolean fullRepair, String... tableNames);
 
     public void forceTerminateAllRepairSessions();
+
+    public void setRepairSessionMaxTreeDepth(int depth);
+
+    public int getRepairSessionMaxTreeDepth();
 
     /**
      * transfer this node's data to other machines and remove it from service.
@@ -532,6 +541,13 @@ public interface StorageServiceMBean extends NotificationEmitter
     public boolean isDrained();
     public boolean isDraining();
 
+    /** Check if currently bootstrapping.
+     * Note this becomes false before {@link org.apache.cassandra.db.SystemKeyspace#bootstrapComplete()} is called,
+     * as setting bootstrap to complete is called only when the node joins the ring.
+     * @return True prior to bootstrap streaming completing. False prior to start of bootstrap and post streaming.
+     */
+    public boolean isBootstrapMode();
+
     public void setRpcTimeout(long value);
     public long getRpcTimeout();
 
@@ -677,4 +693,7 @@ public interface StorageServiceMBean extends NotificationEmitter
      * @return true if the node successfully starts resuming. (this does not mean bootstrap streaming was success.)
      */
     public boolean resumeBootstrap();
+
+    /** Returns the max version that this node will negotiate for native protocol connections */
+    public int getMaxNativeProtocolVersion();
 }

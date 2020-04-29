@@ -18,12 +18,9 @@
 
 package org.apache.cassandra.cql3;
 
-import static org.junit.Assert.*;
-
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import com.google.common.util.concurrent.Uninterruptibles;
@@ -43,17 +40,20 @@ import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.marshal.AsciiType;
-import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.db.view.View;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.service.ClientWarn;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.FBUtilities;
 
+import static junit.framework.Assert.fail;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -229,7 +229,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_test", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s");
-            Assert.fail("Should fail if no primary key is filtered as NOT NULL");
+            fail("Should fail if no primary key is filtered as NOT NULL");
         }
         catch (Exception e)
         {
@@ -239,7 +239,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_test", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE bigintval IS NOT NULL AND asciival IS NOT NULL PRIMARY KEY (bigintval, k, asciival)");
-            Assert.fail("Should fail if compound primary is not completely filtered as NOT NULL");
+            fail("Should fail if compound primary is not completely filtered as NOT NULL");
         }
         catch (Exception e)
         {
@@ -255,7 +255,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_test", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s");
-            Assert.fail("Should fail if no primary key is filtered as NOT NULL");
+            fail("Should fail if no primary key is filtered as NOT NULL");
         }
         catch (Exception e)
         {
@@ -281,7 +281,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_static", "CREATE MATERIALIZED VIEW %%s AS SELECT * FROM %s WHERE sval IS NOT NULL AND k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (sval,k,c)");
-            Assert.fail("Use of static column in a MV primary key should fail");
+            fail("Use of static column in a MV primary key should fail");
         }
         catch (InvalidQueryException e)
         {
@@ -290,7 +290,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_static", "CREATE MATERIALIZED VIEW %%s AS SELECT val, sval FROM %s WHERE val IS NOT NULL AND  k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (val, k, c)");
-            Assert.fail("Explicit select of static column in MV should fail");
+            fail("Explicit select of static column in MV should fail");
         }
         catch (InvalidQueryException e)
         {
@@ -299,7 +299,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_static", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE val IS NOT NULL AND k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (val,k,c)");
-            Assert.fail("Implicit select of static column in MV should fail");
+            fail("Implicit select of static column in MV should fail");
         }
         catch (InvalidQueryException e)
         {
@@ -403,7 +403,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_counter", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE count IS NOT NULL AND k IS NOT NULL PRIMARY KEY (count,k)");
-            Assert.fail("MV on counter should fail");
+            fail("MV on counter should fail");
         }
         catch (InvalidQueryException e)
         {
@@ -425,7 +425,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_super_column", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM " + keyspace + "." + table + " WHERE key IS NOT NULL AND column1 IS NOT NULL PRIMARY KEY (key,column1)");
-            Assert.fail("MV on SuperColumn table should fail");
+            fail("MV on SuperColumn table should fail");
         }
         catch (InvalidQueryException e)
         {
@@ -446,7 +446,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_duration", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE result IS NOT NULL AND k IS NOT NULL PRIMARY KEY (result,k)");
-            Assert.fail("MV on duration should fail");
+            fail("MV on duration should fail");
         }
         catch (InvalidQueryException e)
         {
@@ -738,12 +738,12 @@ public class ViewTest extends CQLTester
                 createView("mv1_" + def.name, query);
 
                 if (def.type.isMultiCell())
-                    Assert.fail("MV on a multicell should fail " + def);
+                    fail("MV on a multicell should fail " + def);
             }
             catch (InvalidQueryException e)
             {
                 if (!def.type.isMultiCell() && !def.isPartitionKey())
-                    Assert.fail("MV creation failed on " + def);
+                    fail("MV creation failed on " + def);
             }
 
 
@@ -755,12 +755,12 @@ public class ViewTest extends CQLTester
                 createView("mv2_" + def.name, query);
 
                 if (def.type.isMultiCell())
-                    Assert.fail("MV on a multicell should fail " + def);
+                    fail("MV on a multicell should fail " + def);
             }
             catch (InvalidQueryException e)
             {
                 if (!def.type.isMultiCell() && !def.isPartitionKey())
-                    Assert.fail("MV creation failed on " + def);
+                    fail("MV creation failed on " + def);
             }
 
             try
@@ -770,12 +770,12 @@ public class ViewTest extends CQLTester
                 createView("mv3_" + def.name, query);
 
                 if (def.type.isMultiCell())
-                    Assert.fail("MV on a multicell should fail " + def);
+                    fail("MV on a multicell should fail " + def);
             }
             catch (InvalidQueryException e)
             {
                 if (!def.type.isMultiCell() && !def.isPartitionKey())
-                    Assert.fail("MV creation failed on " + def);
+                    fail("MV creation failed on " + def);
             }
 
 
@@ -785,7 +785,7 @@ public class ViewTest extends CQLTester
                                + (def.name.toString().equals("asciival") ? "" : "AND asciival IS NOT NULL ") + "PRIMARY KEY ((" + def.name + ", k), asciival)";
                 createView("mv3_" + def.name, query);
 
-                Assert.fail("Should fail on duplicate name");
+                fail("Should fail on duplicate name");
             }
             catch (Exception e)
             {
@@ -796,7 +796,7 @@ public class ViewTest extends CQLTester
                 String query = "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE " + def.name + " IS NOT NULL AND k IS NOT NULL "
                                + (def.name.toString().equals("asciival") ? "" : "AND asciival IS NOT NULL ") + "PRIMARY KEY ((" + def.name + ", k), nonexistentcolumn)";
                 createView("mv3_" + def.name, query);
-                Assert.fail("Should fail with unknown base column");
+                fail("Should fail with unknown base column");
             }
             catch (InvalidQueryException e)
             {
@@ -1247,7 +1247,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_de", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL AND c IS NOT NULL AND d IS NOT NULL AND e IS NOT NULL PRIMARY KEY ((d, a), b, e, c)");
-            Assert.fail("Should have rejected a query including multiple non-primary key base columns");
+            fail("Should have rejected a query including multiple non-primary key base columns");
         }
         catch (Exception e)
         {
@@ -1256,7 +1256,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_de", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL AND c IS NOT NULL AND d IS NOT NULL AND e IS NOT NULL PRIMARY KEY ((a, b), c, d, e)");
-            Assert.fail("Should have rejected a query including multiple non-primary key base columns");
+            fail("Should have rejected a query including multiple non-primary key base columns");
         }
         catch (Exception e)
         {
@@ -1326,7 +1326,7 @@ public class ViewTest extends CQLTester
         try
         {
             createView("mv_ttl1", "CREATE MATERIALIZED VIEW %s AS SELECT * FROM %%s WHERE k IS NOT NULL AND c IS NOT NULL PRIMARY KEY (k,c) WITH default_time_to_live = 30");
-            Assert.fail("Should fail if TTL is provided for materialized view");
+            fail("Should fail if TTL is provided for materialized view");
         }
         catch (Exception e)
         {
@@ -1347,7 +1347,7 @@ public class ViewTest extends CQLTester
         try
         {
             executeNet(protocolVersion, "ALTER MATERIALIZED VIEW %s WITH default_time_to_live = 30");
-            Assert.fail("Should fail if TTL is provided while altering materialized view");
+            fail("Should fail if TTL is provided while altering materialized view");
         }
         catch (Exception e)
         {
@@ -1421,4 +1421,70 @@ public class ViewTest extends CQLTester
      {
          execute("CREATE MATERIALIZED VIEW myview AS SELECT a, b FROM \"\" WHERE b IS NOT NULL PRIMARY KEY (b, a)");
      }
+
+    /**
+     * Tests that a client warning is issued on materialized view creation.
+     */
+    @Test
+    public void testClientWarningOnCreate() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, v int)");
+
+        ClientWarn.instance.captureWarnings();
+        String viewName = keyspace() + ".warning_view";
+        execute("CREATE MATERIALIZED VIEW " + viewName +
+                " AS SELECT v FROM %s WHERE k IS NOT NULL AND v IS NOT NULL PRIMARY KEY (v, k)");
+        views.add(viewName);
+        List<String> warnings = ClientWarn.instance.getWarnings();
+
+        Assert.assertNotNull(warnings);
+        Assert.assertEquals(1, warnings.size());
+        Assert.assertEquals(View.USAGE_WARNING, warnings.get(0));
+    }
+
+    /**
+     * Tests the configuration flag to disable materialized views.
+     */
+    @Test
+    public void testDisableMaterializedViews() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, v int)");
+
+        executeNet(protocolVersion, "USE " + keyspace());
+
+        boolean enableMaterializedViews = DatabaseDescriptor.getEnableMaterializedViews();
+        try
+        {
+            DatabaseDescriptor.setEnableMaterializedViews(false);
+            createView("view1", "CREATE MATERIALIZED VIEW %s AS SELECT v FROM %%s WHERE k IS NOT NULL AND v IS NOT NULL PRIMARY KEY (v, k)");
+            fail("Should not be able to create a materialized view if they are disabled");
+        }
+        catch (Throwable e)
+        {
+            Assert.assertTrue(e instanceof InvalidQueryException);
+            Assert.assertTrue(e.getMessage().contains("Materialized views are disabled"));
+        }
+        finally
+        {
+            DatabaseDescriptor.setEnableMaterializedViews(enableMaterializedViews);
+        }
+    }
+
+    @Test
+    public void viewOnCompactTableTest() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, v int, PRIMARY KEY (a, b)) WITH COMPACT STORAGE");
+        executeNet(protocolVersion, "USE " + keyspace());
+        try
+        {
+            createView("mv",
+                       "CREATE MATERIALIZED VIEW %s AS SELECT a, b, value FROM %%s WHERE b IS NOT NULL PRIMARY KEY (b, a)");
+            fail("Should have thrown an exception");
+        }
+        catch (Throwable t)
+        {
+            Assert.assertEquals("Undefined column name value",
+                                t.getMessage());
+        }
+    }
 }

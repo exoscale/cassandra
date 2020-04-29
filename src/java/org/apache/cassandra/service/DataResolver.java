@@ -344,8 +344,10 @@ public class DataResolver extends ResponseResolver
                     // The following can be pretty verbose, but it's really only triggered if a bug happen, so we'd
                     // rather get more info to debug than not.
                     CFMetaData table = command.metadata();
-                    String details = String.format("Error merging RTs on %s.%s: merged=%s, versions=%s, sources={%s}, responses:%n %s",
+                    String details = String.format("Error merging RTs on %s.%s: command=%s, reversed=%b, merged=%s, versions=%s, sources={%s}, responses:%n %s",
                                                    table.ksName, table.cfName,
+                                                   command.toCQLString(),
+                                                   isReversed,
                                                    merged == null ? "null" : merged.toString(table),
                                                    '[' + Joiner.on(", ").join(Iterables.transform(Arrays.asList(versions), rt -> rt == null ? "null" : rt.toString(table))) + ']',
                                                    Arrays.toString(sources),
@@ -408,9 +410,11 @@ public class DataResolver extends ResponseResolver
                         DeletionTime partitionRepairDeletion = partitionLevelRepairDeletion(i);
                         if (markerToRepair[i] == null && currentDeletion.supersedes(partitionRepairDeletion))
                         {
-                            // Since there is an ongoing merged deletion, the only way we don't have an open repair for
-                            // this source is that it had a range open with the same deletion as current and it's
-                            // closing it.
+                            /*
+                             * Since there is an ongoing merged deletion, the only way we don't have an open repair for
+                             * this source is that it had a range open with the same deletion as current marker,
+                             * and the marker is closing it.
+                             */
                             assert marker.isClose(isReversed) && currentDeletion.equals(marker.closeDeletionTime(isReversed))
                                  : String.format("currentDeletion=%s, marker=%s", currentDeletion, marker.toString(command.metadata()));
 

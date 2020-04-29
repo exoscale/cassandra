@@ -19,10 +19,14 @@ package org.apache.cassandra.io.sstable.metadata;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Maps;
 
 import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
 import com.clearspring.analytics.stream.cardinality.ICardinality;
@@ -43,6 +47,7 @@ import org.apache.cassandra.utils.StreamingHistogram;
 public class MetadataCollector implements PartitionStatisticsCollector
 {
     public static final double NO_COMPRESSION_RATIO = -1.0;
+    private static final ByteBuffer[] EMPTY_CLUSTERING = new ByteBuffer[0];
 
     static EstimatedHistogram defaultCellPerPartitionCountHistogram()
     {
@@ -93,8 +98,8 @@ public class MetadataCollector implements PartitionStatisticsCollector
     protected double compressionRatio = NO_COMPRESSION_RATIO;
     protected StreamingHistogram.StreamingHistogramBuilder estimatedTombstoneDropTime = defaultTombstoneDropTimeHistogramBuilder();
     protected int sstableLevel;
-    protected ByteBuffer[] minClusteringValues;
-    protected ByteBuffer[] maxClusteringValues;
+    private ClusteringPrefix minClustering = null;
+    private ClusteringPrefix maxClustering = null;
     protected boolean hasLegacyCounterShards = false;
     protected long totalColumnsSet;
     protected long totalRows;
@@ -112,8 +117,6 @@ public class MetadataCollector implements PartitionStatisticsCollector
     {
         this.comparator = comparator;
 
-        this.minClusteringValues = new ByteBuffer[comparator.size()];
-        this.maxClusteringValues = new ByteBuffer[comparator.size()];
     }
 
     public MetadataCollector(Iterable<SSTableReader> sstables, ClusteringComparator comparator, int level)
@@ -228,46 +231,9 @@ public class MetadataCollector implements PartitionStatisticsCollector
 
     public MetadataCollector updateClusteringValues(ClusteringPrefix clustering)
     {
-        int size = clustering.size();
-        for (int i = 0; i < size; i++)
-        {
-            AbstractType<?> type = comparator.subtype(i);
-            ByteBuffer newValue = clustering.get(i);
-            minClusteringValues[i] = maybeMinimize(min(minClusteringValues[i], newValue, type));
-            maxClusteringValues[i] = maybeMinimize(max(maxClusteringValues[i], newValue, type));
-        }
+        minClustering = minClustering == null || comparator.compare(clustering, minClustering) < 0 ? clustering.minimize() : minClustering;
+        maxClustering = maxClustering == null || comparator.compare(clustering, maxClustering) > 0 ? clustering.minimize() : maxClustering;
         return this;
-    }
-
-    private static ByteBuffer maybeMinimize(ByteBuffer buffer)
-    {
-        // ByteBuffer.minimalBufferFor doesn't handle null, but we can get it in this case since it's possible
-        // for some clustering values to be null
-        return buffer == null ? null : ByteBufferUtil.minimalBufferFor(buffer);
-    }
-
-    private static ByteBuffer min(ByteBuffer b1, ByteBuffer b2, AbstractType<?> comparator)
-    {
-        if (b1 == null)
-            return b2;
-        if (b2 == null)
-            return b1;
-
-        if (comparator.compare(b1, b2) >= 0)
-            return b2;
-        return b1;
-    }
-
-    private static ByteBuffer max(ByteBuffer b1, ByteBuffer b2, AbstractType<?> comparator)
-    {
-        if (b1 == null)
-            return b2;
-        if (b2 == null)
-            return b1;
-
-        if (comparator.compare(b1, b2) >= 0)
-            return b1;
-        return b2;
     }
 
     public void updateHasLegacyCounterShards(boolean hasLegacyCounterShards)
@@ -277,6 +243,10 @@ public class MetadataCollector implements PartitionStatisticsCollector
 
     public Map<MetadataType, MetadataComponent> finalizeMetadata(String partitioner, double bloomFilterFPChance, long repairedAt, SerializationHeader header)
     {
+        Preconditions.checkState((minClustering == null && maxClustering == null)
+                                 || comparator.compare(maxClustering, minClustering) >= 0);
+        ByteBuffer[] minValues = minClustering != null ? minClustering.getRawValues() : EMPTY_CLUSTERING;
+        ByteBuffer[] maxValues = maxClustering != null ? maxClustering.getRawValues() : EMPTY_CLUSTERING;
         Map<MetadataType, MetadataComponent> components = new EnumMap<>(MetadataType.class);
         components.put(MetadataType.VALIDATION, new ValidationMetadata(partitioner, bloomFilterFPChance));
         components.put(MetadataType.STATS, new StatsMetadata(estimatedPartitionSize,
@@ -291,8 +261,8 @@ public class MetadataCollector implements PartitionStatisticsCollector
                                                              compressionRatio,
                                                              estimatedTombstoneDropTime.build(),
                                                              sstableLevel,
-                                                             makeList(minClusteringValues),
-                                                             makeList(maxClusteringValues),
+                                                             makeList(minValues),
+                                                             makeList(maxValues),
                                                              hasLegacyCounterShards,
                                                              repairedAt,
                                                              totalColumnsSet,

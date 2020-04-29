@@ -39,6 +39,7 @@ import org.apache.cassandra.db.lifecycle.*;
 import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.transform.RTBoundValidator;
 import org.apache.cassandra.db.transform.Transformation;
 import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
@@ -709,8 +710,10 @@ public class SinglePartitionReadCommand extends ReadCommand
 
                 @SuppressWarnings("resource") // 'iter' is added to iterators which is closed on exception, or through the closing of the final merged iterator
                 UnfilteredRowIterator iter = filter.getUnfilteredRowIterator(columnFilter(), partition);
+                if (isForThrift())
+                    iter = ThriftResultsMerger.maybeWrap(iter, nowInSec());
                 oldestUnrepairedTombstone = Math.min(oldestUnrepairedTombstone, partition.stats().minLocalDeletionTime);
-                iterators.add(isForThrift() ? ThriftResultsMerger.maybeWrap(iter, nowInSec()) : iter);
+                iterators.add(RTBoundValidator.validate(iter, RTBoundValidator.Stage.MEMTABLE, false));
             }
 
             /*
@@ -725,7 +728,7 @@ public class SinglePartitionReadCommand extends ReadCommand
              * In other words, iterating in maxTimestamp order allow to do our mostRecentPartitionTombstone elimination
              * in one pass, and minimize the number of sstables for which we read a partition tombstone.
              */
-            Collections.sort(view.sstables, SSTableReader.maxTimestampComparator);
+            Collections.sort(view.sstables, SSTableReader.maxTimestampDescending);
             long mostRecentPartitionTombstone = Long.MIN_VALUE;
             int nonIntersectingSSTables = 0;
             List<SSTableReader> skippedSSTablesWithTombstones = null;
@@ -903,12 +906,17 @@ public class SinglePartitionReadCommand extends ReadCommand
                 if (iter.isEmpty())
                     continue;
 
-                result = add(isForThrift() ? ThriftResultsMerger.maybeWrap(iter, nowInSec()) : iter, result, filter, false);
+                result = add(
+                    RTBoundValidator.validate(isForThrift() ? ThriftResultsMerger.maybeWrap(iter, nowInSec()) : iter, RTBoundValidator.Stage.MEMTABLE, false),
+                    result,
+                    filter,
+                    false
+                );
             }
         }
 
         /* add the SSTables on disk */
-        Collections.sort(view.sstables, SSTableReader.maxTimestampComparator);
+        Collections.sort(view.sstables, SSTableReader.maxTimestampDescending);
         boolean onlyUnrepaired = true;
         // read sorted sstables
         SSTableReadMetricsCollector metricsCollector = new SSTableReadMetricsCollector();
@@ -945,10 +953,29 @@ public class SinglePartitionReadCommand extends ReadCommand
                                                                                        metricsCollector))
                 {
                     if (!iter.partitionLevelDeletion().isLive())
-                        result = add(UnfilteredRowIterators.noRowsIterator(iter.metadata(), iter.partitionKey(), Rows.EMPTY_STATIC_ROW, iter.partitionLevelDeletion(), filter.isReversed()), result, filter, sstable.isRepaired());
+                    {
+                        result = add(
+                            UnfilteredRowIterators.noRowsIterator(iter.metadata(),
+                                                                  iter.partitionKey(),
+                                                                  Rows.EMPTY_STATIC_ROW,
+                                                                  iter.partitionLevelDeletion(),
+                                                                  filter.isReversed()),
+                            result,
+                            filter,
+                            sstable.isRepaired()
+                        );
+                    }
                     else
-                        result = add(iter, result, filter, sstable.isRepaired());
+                    {
+                        result = add(
+                            RTBoundValidator.validate(iter, RTBoundValidator.Stage.SSTABLE, false),
+                            result,
+                            filter,
+                            sstable.isRepaired()
+                        );
+                    }
                 }
+
                 continue;
             }
 
@@ -966,7 +993,13 @@ public class SinglePartitionReadCommand extends ReadCommand
 
                 if (sstable.isRepaired())
                     onlyUnrepaired = false;
-                result = add(isForThrift() ? ThriftResultsMerger.maybeWrap(iter, nowInSec()) : iter, result, filter, sstable.isRepaired());
+
+                result = add(
+                    RTBoundValidator.validate(isForThrift() ? ThriftResultsMerger.maybeWrap(iter, nowInSec()) : iter, RTBoundValidator.Stage.SSTABLE, false),
+                    result,
+                    filter,
+                    sstable.isRepaired()
+                );
             }
         }
 

@@ -86,7 +86,7 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
                 Range<Token> range = new Range<>(tokenFactory.fromString(tokenRange.getStart().getValue().toString()),
                                                  tokenFactory.fromString(tokenRange.getEnd().getValue().toString()));
                 for (Host endpoint : endpoints)
-                    addRangeForEndpoint(range, endpoint.getAddress());
+                    addRangeForEndpoint(range, endpoint.getBroadcastAddress());
             }
 
             Types types = fetchTypes(keyspace, session);
@@ -219,9 +219,7 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
         if (order == ClusteringOrder.DESC)
             type = ReversedType.getInstance(type);
 
-        ColumnIdentifier name = ColumnIdentifier.getInterned(type,
-                                                             row.getBytes("column_name_bytes"),
-                                                             row.getString("column_name"));
+        ColumnIdentifier name = new ColumnIdentifier(row.getBytes("column_name_bytes"), row.getString("column_name"));
 
         int position = row.getInt("position");
         ColumnDefinition.Kind kind = ColumnDefinition.Kind.valueOf(row.getString("kind").toUpperCase());
@@ -231,8 +229,10 @@ public class NativeSSTableLoaderClient extends SSTableLoader.Client
     private static CFMetaData.DroppedColumn createDroppedColumnFromRow(Row row, String keyspace)
     {
         String name = row.getString("column_name");
+        ColumnDefinition.Kind kind =
+            row.isNull("kind") ? null : ColumnDefinition.Kind.valueOf(row.getString("kind").toUpperCase());
         AbstractType<?> type = CQLTypeParser.parse(keyspace, row.getString("type"), Types.none());
         long droppedTime = TimeUnit.MILLISECONDS.toMicros(row.getTimestamp("dropped_time").getTime());
-        return new CFMetaData.DroppedColumn(name, type, droppedTime);
+        return new CFMetaData.DroppedColumn(name, kind, type, droppedTime);
     }
 }

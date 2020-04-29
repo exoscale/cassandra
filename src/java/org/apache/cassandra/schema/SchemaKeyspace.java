@@ -169,6 +169,7 @@ public final class SchemaKeyspace
                 + "table_name text,"
                 + "column_name text,"
                 + "dropped_time timestamp,"
+                + "kind text,"
                 + "type text,"
                 + "PRIMARY KEY ((keyspace_name), table_name, column_name))");
 
@@ -524,7 +525,7 @@ public final class SchemaKeyspace
         return builder;
     }
 
-    static void addTableToSchemaMutation(CFMetaData table, boolean withColumnsAndTriggers, Mutation.SimpleBuilder builder)
+    public static void addTableToSchemaMutation(CFMetaData table, boolean withColumnsAndTriggers, Mutation.SimpleBuilder builder)
     {
         Row.SimpleBuilder rowBuilder = builder.update(Tables)
                                               .row(table.cfName)
@@ -707,6 +708,7 @@ public final class SchemaKeyspace
         builder.update(DroppedColumns)
                .row(table.cfName, column.name)
                .add("dropped_time", new Date(TimeUnit.MICROSECONDS.toMillis(column.droppedTime)))
+               .add("kind", null != column.kind ? column.kind.toString().toLowerCase() : null)
                .add("type", expandUserTypes(column.type).asCQL3Type().toString());
     }
 
@@ -798,7 +800,7 @@ public final class SchemaKeyspace
 
         // dropped columns
         MapDifference<ByteBuffer, CFMetaData.DroppedColumn> droppedColumnDiff =
-        Maps.difference(oldView.metadata.getDroppedColumns(), oldView.metadata.getDroppedColumns());
+            Maps.difference(oldView.metadata.getDroppedColumns(), oldView.metadata.getDroppedColumns());
 
         // newly dropped columns
         for (CFMetaData.DroppedColumn column : droppedColumnDiff.entriesOnlyOnRight().values())
@@ -999,18 +1001,24 @@ public final class SchemaKeyspace
             }
             catch (MissingColumns exc)
             {
-                if (!IGNORE_CORRUPTED_SCHEMA_TABLES)
+                String errorMsg = String.format("No partition columns found for table %s.%s in %s.%s.  This may be due to " +
+                                                "corruption or concurrent dropping and altering of a table. If this table is supposed " +
+                                                "to be dropped, {}run the following query to cleanup: " +
+                                                "\"DELETE FROM %s.%s WHERE keyspace_name = '%s' AND table_name = '%s'; " +
+                                                "DELETE FROM %s.%s WHERE keyspace_name = '%s' AND table_name = '%s';\" " +
+                                                "If the table is not supposed to be dropped, restore %s.%s sstables from backups.",
+                                                keyspaceName, tableName, SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS,
+                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, TABLES, keyspaceName, tableName,
+                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS, keyspaceName, tableName,
+                                                SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS);
+
+                if (IGNORE_CORRUPTED_SCHEMA_TABLES)
                 {
-                    logger.error("No columns found for table {}.{} in {}.{}.  This may be due to " +
-                                 "corruption or concurrent dropping and altering of a table.  If this table " +
-                                 "is supposed to be dropped, restart cassandra with -Dcassandra.ignore_corrupted_schema_tables=true " +
-                                 "and run the following query: \"DELETE FROM {}.{} WHERE keyspace_name = '{}' AND table_name = '{}';\"." +
-                                 "If the table is not supposed to be dropped, restore {}.{} sstables from backups.",
-                                 keyspaceName, tableName,
-                                 SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS,
-                                 SchemaConstants.SCHEMA_KEYSPACE_NAME, TABLES,
-                                 keyspaceName, tableName,
-                                 SchemaConstants.SCHEMA_KEYSPACE_NAME, COLUMNS);
+                    logger.error(errorMsg, "", exc);
+                }
+                else
+                {
+                    logger.error(errorMsg, "restart cassandra with -Dcassandra.ignore_corrupted_schema_tables=true and ");
                     throw exc;
                 }
             }
@@ -1093,6 +1101,10 @@ public final class SchemaKeyspace
 
         List<ColumnDefinition> columns = new ArrayList<>();
         columnRows.forEach(row -> columns.add(createColumnFromRow(row, types)));
+
+        if (columns.stream().noneMatch(ColumnDefinition::isPartitionKey))
+            throw new MissingColumns("No partition key columns found in schema table for " + keyspace + "." + table);
+
         return columns;
     }
 
@@ -1110,9 +1122,7 @@ public final class SchemaKeyspace
         if (order == ClusteringOrder.DESC)
             type = ReversedType.getInstance(type);
 
-        ColumnIdentifier name = ColumnIdentifier.getInterned(type,
-                                                             row.getBytes("column_name_bytes"),
-                                                             row.getString("column_name"));
+        ColumnIdentifier name = new ColumnIdentifier(row.getBytes("column_name_bytes"), row.getString("column_name"));
 
         return new ColumnDefinition(keyspace, table, name, type, position, kind);
     }
@@ -1133,6 +1143,10 @@ public final class SchemaKeyspace
     {
         String keyspace = row.getString("keyspace_name");
         String name = row.getString("column_name");
+
+        ColumnDefinition.Kind kind =
+            row.has("kind") ? ColumnDefinition.Kind.valueOf(row.getString("kind").toUpperCase())
+                            : null;
         /*
          * we never store actual UDT names in dropped column types (so that we can safely drop types if nothing refers to
          * them anymore), so before storing dropped columns in schema we expand UDTs to tuples. See expandUserTypes method.
@@ -1140,7 +1154,7 @@ public final class SchemaKeyspace
          */
         AbstractType<?> type = parse(keyspace, row.getString("type"), org.apache.cassandra.schema.Types.none());
         long droppedTime = TimeUnit.MILLISECONDS.toMicros(row.getLong("dropped_time"));
-        return new CFMetaData.DroppedColumn(name, type, droppedTime);
+        return new CFMetaData.DroppedColumn(name, kind, type, droppedTime);
     }
 
     private static Indexes fetchIndexes(String keyspace, String table)
@@ -1479,7 +1493,8 @@ public final class SchemaKeyspace
      * We do it for dropped_columns, to allow safely dropping unused user types without retaining any references
      * in dropped_columns.
      */
-    private static AbstractType<?> expandUserTypes(AbstractType<?> original)
+    @VisibleForTesting
+    public static AbstractType<?> expandUserTypes(AbstractType<?> original)
     {
         if (original instanceof UserType)
             return new TupleType(expandUserTypes(((UserType) original).fieldTypes()));
@@ -1516,7 +1531,8 @@ public final class SchemaKeyspace
                     .collect(toList());
     }
 
-    private static class MissingColumns extends RuntimeException
+    @VisibleForTesting
+    static class MissingColumns extends RuntimeException
     {
         MissingColumns(String message)
         {

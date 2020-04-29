@@ -20,7 +20,6 @@ package org.apache.cassandra.db;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.util.*;
@@ -84,7 +83,10 @@ import org.apache.cassandra.utils.memory.MemtableAllocator;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 
+import static org.apache.cassandra.utils.ExecutorUtils.awaitTermination;
+import static org.apache.cassandra.utils.ExecutorUtils.shutdown;
 import static org.apache.cassandra.utils.Throwables.maybeFail;
+import static org.apache.cassandra.utils.Throwables.merge;
 
 public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 {
@@ -253,10 +255,24 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     @VisibleForTesting
     final DiskBoundaryManager diskBoundaryManager = new DiskBoundaryManager();
 
+    public static void shutdownFlushExecutor() throws InterruptedException
+    {
+        flushExecutor.shutdown();
+        flushExecutor.awaitTermination(60, TimeUnit.SECONDS);
+    }
+
     public static void shutdownPostFlushExecutor() throws InterruptedException
     {
         postFlushExecutor.shutdown();
         postFlushExecutor.awaitTermination(60, TimeUnit.SECONDS);
+    }
+
+    public static void shutdownExecutorsAndWait(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException
+    {
+        List<ExecutorService> executors = new ArrayList<>(perDiskflushExecutors.length + 3);
+        Collections.addAll(executors, reclaimExecutor, postFlushExecutor, flushExecutor);
+        Collections.addAll(executors, perDiskflushExecutors);
+        ExecutorUtils.shutdownAndWait(timeout, unit, executors);
     }
 
     public void reload()
@@ -461,11 +477,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                                          keyspace.getName(), name);
             try
             {
-                MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
                 ObjectName[] objectNames = {new ObjectName(mbeanName), new ObjectName(oldMBeanName)};
                 for (ObjectName objectName : objectNames)
                 {
-                    mbs.registerMBean(this, objectName);
+                    MBeanWrapper.instance.registerMBean(this, objectName);
                 }
             }
             catch (Exception e)
@@ -507,15 +522,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return directories;
     }
 
-    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, int sstableLevel, SerializationHeader header, LifecycleTransaction txn)
+    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, int sstableLevel, SerializationHeader header, LifecycleNewTracker lifecycleNewTracker)
     {
         MetadataCollector collector = new MetadataCollector(metadata.comparator).sstableLevel(sstableLevel);
-        return createSSTableMultiWriter(descriptor, keyCount, repairedAt, collector, header, txn);
+        return createSSTableMultiWriter(descriptor, keyCount, repairedAt, collector, header, lifecycleNewTracker);
     }
 
-    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, MetadataCollector metadataCollector, SerializationHeader header, LifecycleTransaction txn)
+    public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, MetadataCollector metadataCollector, SerializationHeader header, LifecycleNewTracker lifecycleNewTracker)
     {
-        return getCompactionStrategyManager().createSSTableMultiWriter(descriptor, keyCount, repairedAt, metadataCollector, header, indexManager.listIndexes(), txn);
+        return getCompactionStrategyManager().createSSTableMultiWriter(descriptor, keyCount, repairedAt, metadataCollector, header, indexManager.listIndexes(), lifecycleNewTracker);
     }
 
     public boolean supportsEarlyOpen()
@@ -568,14 +583,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         data.removeUnreadableSSTables(directory);
     }
 
-    void unregisterMBean() throws MalformedObjectNameException, InstanceNotFoundException, MBeanRegistrationException
+    void unregisterMBean() throws MalformedObjectNameException
     {
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
         ObjectName[] objectNames = {new ObjectName(mbeanName), new ObjectName(oldMBeanName)};
         for (ObjectName objectName : objectNames)
         {
-            if (mbs.isRegistered(objectName))
-                mbs.unregisterMBean(objectName);
+            if (MBeanWrapper.instance.isRegistered(objectName))
+                MBeanWrapper.instance.unregisterMBean(objectName);
         }
 
         // unregister metrics
@@ -702,7 +716,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      * @param ksName The keyspace name
      * @param cfName The columnFamily name
      */
-    public static synchronized void loadNewSSTables(String ksName, String cfName)
+    public static void loadNewSSTables(String ksName, String cfName)
     {
         /** ks/cf existence checks will be done by open and getCFS methods for us */
         Keyspace keyspace = Keyspace.open(ksName);
@@ -1900,8 +1914,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 {
                     if (logger.isTraceEnabled())
                         logger.trace("using snapshot sstable {}", entries.getKey());
-                    // open without tracking hotness
-                    sstable = SSTableReader.open(entries.getKey(), entries.getValue(), metadata, true, false);
+                    // open offline so we don't modify components or track hotness.
+                    sstable = SSTableReader.open(entries.getKey(), entries.getValue(), metadata, true, true);
                     refs.tryRef(sstable);
                     // release the self ref as we never add the snapshot sstable to DataTracker where it is otherwise released
                     sstable.selfRef().release();
@@ -2251,9 +2265,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                                                                ? Iterables.concat(concatWithIndexes(), viewManager.allViewsCfs())
                                                                : concatWithIndexes();
 
-            for (ColumnFamilyStore cfs : selfWithAuxiliaryCfs)
-                cfs.getCompactionStrategyManager().pause();
-            try
+            try (CompactionManager.CompactionPauser pause = CompactionManager.instance.pauseGlobalCompaction();
+                 CompactionManager.CompactionPauser pausedStrategies = pauseCompactionStrategies(selfWithAuxiliaryCfs))
             {
                 // interrupt in-progress compactions
                 CompactionManager.instance.interruptCompactionForCFs(selfWithAuxiliaryCfs, interruptValidation);
@@ -2280,12 +2293,43 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                     throw new RuntimeException(e);
                 }
             }
-            finally
+        }
+    }
+
+    private static CompactionManager.CompactionPauser pauseCompactionStrategies(Iterable<ColumnFamilyStore> toPause)
+    {
+        ArrayList<ColumnFamilyStore> successfullyPaused = new ArrayList<>();
+        try
+        {
+            for (ColumnFamilyStore cfs : toPause)
             {
-                for (ColumnFamilyStore cfs : selfWithAuxiliaryCfs)
-                    cfs.getCompactionStrategyManager().resume();
+                successfullyPaused.ensureCapacity(successfullyPaused.size() + 1); // to avoid OOM:ing after pausing the strategies
+                cfs.getCompactionStrategyManager().pause();
+                successfullyPaused.add(cfs);
+            }
+            return () -> maybeFail(resumeAll(null, toPause));
+        }
+        catch (Throwable t)
+        {
+            resumeAll(t, successfullyPaused);
+            throw t;
+        }
+    }
+
+    private static Throwable resumeAll(Throwable accumulate, Iterable<ColumnFamilyStore> cfss)
+    {
+        for (ColumnFamilyStore cfs : cfss)
+        {
+            try
+            {
+                cfs.getCompactionStrategyManager().resume();
+            }
+            catch (Throwable t)
+            {
+                accumulate = merge(accumulate, t);
             }
         }
+        return accumulate;
     }
 
     public LifecycleTransaction markAllCompacting(final OperationType operationType)
@@ -2297,7 +2341,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 assert data.getCompacting().isEmpty() : data.getCompacting();
                 Iterable<SSTableReader> sstables = getLiveSSTables();
                 sstables = AbstractCompactionStrategy.filterSuspectSSTables(sstables);
-                sstables = ImmutableList.copyOf(sstables);
                 LifecycleTransaction modifier = data.tryModify(sstables, operationType);
                 assert modifier != null: "something marked things compacting while compactions are disabled";
                 return modifier;

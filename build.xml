@@ -8,7 +8,7 @@
  ~ "License"); you may not use this file except in compliance
  ~ with the License.  You may obtain a copy of the License at
  ~
- ~    http://www.apache.org/licenses/LICENSE-2.0
+ ~    https://www.apache.org/licenses/LICENSE-2.0
  ~
  ~ Unless required by applicable law or agreed to in writing,
  ~ software distributed under the License is distributed on an
@@ -25,10 +25,10 @@
     <property name="debuglevel" value="source,lines,vars"/>
 
     <!-- default version and SCM information -->
-    <property name="base.version" value="3.11.2"/>
-    <property name="scm.connection" value="scm:git://git.apache.org/cassandra.git"/>
-    <property name="scm.developerConnection" value="scm:git://git.apache.org/cassandra.git"/>
-    <property name="scm.url" value="http://git-wip-us.apache.org/repos/asf?p=cassandra.git;a=tree"/>
+    <property name="base.version" value="3.11.6"/>
+    <property name="scm.connection" value="scm:https://gitbox.apache.org/repos/asf/cassandra.git"/>
+    <property name="scm.developerConnection" value="scm:https://gitbox.apache.org/repos/asf/cassandra.git"/>
+    <property name="scm.url" value="https://gitbox.apache.org/repos/asf?p=cassandra.git;a=tree"/>
 
     <!-- directory details -->
     <property name="basedir" value="."/>
@@ -58,20 +58,25 @@
     <property name="test.data" value="${test.dir}/data"/>
     <property name="test.name" value="*Test"/>
     <property name="test.classlistfile" value="testlist.txt"/>
+    <property name="test.classlistprefix" value="unit"/>
     <property name="benchmark.name" value=""/>
     <property name="test.methods" value=""/>
     <property name="test.unit.src" value="${test.dir}/unit"/>
     <property name="test.long.src" value="${test.dir}/long"/>
     <property name="test.burn.src" value="${test.dir}/burn"/>
     <property name="test.microbench.src" value="${test.dir}/microbench"/>
+    <property name="test.distributed.src" value="${test.dir}/distributed"/>
+    <property name="test.distributed.listfile" value="ant-jvm-dtest-list"/>
+    <property name="test.distributed.upgrade.listfile" value="ant-jvm-dtest-upgrade-list"/>
+    <property name="test.distributed.upgrade.package" value="org.apache.cassandra.distributed.upgrade"/>
     <property name="dist.dir" value="${build.dir}/dist"/>
     <property name="tmp.dir" value="${java.io.tmpdir}"/>
 
     <property name="doc.dir" value="${basedir}/doc"/>
-	
+
     <property name="source.version" value="1.8"/>
     <property name="target.version" value="1.8"/>
-	
+
     <condition property="version" value="${base.version}">
       <isset property="release"/>
     </condition>
@@ -79,12 +84,12 @@
     <property name="version.properties.dir"
               value="${build.src.resources}/org/apache/cassandra/config/" />
     <property name="final.name" value="${ant.project.name}-${version}"/>
- 
+
     <!-- details of what version of Maven ANT Tasks to fetch -->
     <property name="maven-ant-tasks.version" value="2.1.3" />
     <property name="maven-ant-tasks.local" value="${user.home}/.m2/repository/org/apache/maven/maven-ant-tasks"/>
     <property name="maven-ant-tasks.url"
-              value="http://repo2.maven.org/maven2/org/apache/maven/maven-ant-tasks" />
+              value="https://repo.maven.apache.org/maven2/org/apache/maven/maven-ant-tasks" />
     <!-- details of how and which Maven repository we publish to -->
     <property name="maven.version" value="3.0.3" />
     <condition property="maven-repository-url" value="https://repository.apache.org/service/local/staging/deploy/maven2">
@@ -98,15 +103,16 @@
 
     <property name="test.timeout" value="240000" />
     <property name="test.long.timeout" value="600000" />
-    <property name="test.burn.timeout" value="600000" />
+    <property name="test.burn.timeout" value="60000000" />
+    <property name="test.distributed.timeout" value="360000" />
 
     <!-- default for cql tests. Can be override by -Dcassandra.test.use_prepared=false -->
     <property name="cassandra.test.use_prepared" value="true" />
 
     <!-- skip flushing schema tables during tests -->
     <property name="cassandra.test.flush_local_schema_changes" value="false" />
-    
-    <!-- http://www.eclemma.org/jacoco/ -->
+
+    <!-- https://www.eclemma.org/jacoco/ -->
     <property name="jacoco.export.dir" value="${build.dir}/jacoco/" />
     <property name="jacoco.partials.dir" value="${jacoco.export.dir}/partials" />
     <property name="jacoco.partialexecfile" value="${jacoco.partials.dir}/partial.exec" />
@@ -128,10 +134,6 @@
     <condition property="is.source.artifact">
       <available file="${build.src.java}" type="dir" />
     </condition>
-
-    <tstamp>
-      <format property="YEAR" pattern="yyyy"/>
-    </tstamp>
 
     <!-- Check if all tests are being run or just one. If it's all tests don't spam the console with test output.
          If it's an individual test print the output from the test under the assumption someone is debugging the test
@@ -172,7 +174,7 @@
     <sequential>
       <javadoc destdir="@{destdir}" author="true" version="true" use="true"
         windowtitle="${ant.project.name} API" classpathref="cassandra.classpath"
-        bottom="Copyright &amp;copy; ${YEAR} The Apache Software Foundation"
+        bottom="Copyright &amp;copy; 2009-2019 The Apache Software Foundation"
         useexternalfile="yes" encoding="UTF-8"
         maxmemory="256m">
         <filesets/>
@@ -222,7 +224,7 @@
             </srcfiles>
         </uptodate>
     </target>
- 
+
     <target name="gen-cql3-grammar" depends="check-gen-cql3-grammar" unless="cql3current">
       <echo>Building Grammar ${build.src.antlr}/Cql.g  ...</echo>
       <java classname="org.antlr.Tool"
@@ -328,7 +330,7 @@
         <sequential>
           <artifact:mvn mavenVersion="${maven.version}" fork="true" failonerror="true">
             <jvmarg value="-Xmx512m"/>
-            <arg value="org.apache.maven.plugins:maven-gpg-plugin:1.4:sign-and-deploy-file" />
+            <arg value="org.apache.maven.plugins:maven-gpg-plugin:1.6:sign-and-deploy-file" />
             <arg value="-DretryFailedDeploymentCount=5" />
             <arg value="-Durl=${maven-repository-url}" />
             <arg value="-DrepositoryId=${maven-repository-id}" />
@@ -336,7 +338,25 @@
             <arg value="-Dfile=@{file}" />
             <arg value="-Dclassifier=@{classifier}" />
             <arg value="-Dpackaging=@{packaging}" />
-            <arg value="-Papache-release" />
+          </artifact:mvn>
+        </sequential>
+      </macrodef>
+
+      <macrodef name="sign-dist">
+        <attribute name="file"/>
+        <sequential>
+          <echo message="gpg signing @{file}" />
+          <artifact:mvn mavenVersion="${maven.version}" fork="true" failonerror="true">
+            <jvmarg value="-Xmx512m"/>
+            <arg value="-q" />
+            <arg value="org.apache.maven.plugins:maven-gpg-plugin:1.6:sign-and-deploy-file" />
+            <arg value="-Dfile=@{file}" />
+            <arg value="-DgroupId=org.apache.cassandra" />
+            <arg value="-DartifactId=cassandra-parent" />
+            <arg value="-Dversion=${version}" />
+            <!-- intentionally dummy out the deploy step -->
+            <arg value="-Durl=file:///tmp/" />
+            <arg value="-DrepositoryId=tmp" />
           </artifact:mvn>
         </sequential>
       </macrodef>
@@ -355,11 +375,14 @@
                     artifactId="cassandra-parent"
                     packaging="pom"
                     version="${version}"
-                    url="http://cassandra.apache.org"
+                    url="https://cassandra.apache.org"
                     name="Apache Cassandra"
                     inceptionYear="2009"
                     description="The Apache Cassandra Project develops a highly scalable second-generation distributed database, bringing together Dynamo's fully distributed design and Bigtable's ColumnFamily-based data model.">
-        <license name="The Apache Software License, Version 2.0" url="http://www.apache.org/licenses/LICENSE-2.0.txt"/>
+
+        <!-- Inherit from the ASF template pom file, ref http://maven.apache.org/pom/asf/ -->
+        <parent groupId="org.apache" artifactId="apache" version="22"/>
+        <license name="The Apache Software License, Version 2.0" url="https://www.apache.org/licenses/LICENSE-2.0.txt"/>
         <scm connection="${scm.connection}" developerConnection="${scm.developerConnection}" url="${scm.url}"/>
         <dependencyManagement>
           <dependency groupId="org.xerial.snappy" artifactId="snappy-java" version="1.1.1.7"/>
@@ -388,7 +411,7 @@
           <dependency groupId="com.googlecode.json-simple" artifactId="json-simple" version="1.1"/>
           <dependency groupId="com.boundary" artifactId="high-scale-lib" version="1.0.6"/>
           <dependency groupId="com.github.jbellis" artifactId="jamm" version="0.3.0"/>
-	
+
           <dependency groupId="com.thinkaurelius.thrift" artifactId="thrift-server" version="0.3.7">
             <exclusion groupId="org.slf4j" artifactId="slf4j-log4j12"/>
             <exclusion groupId="junit" artifactId="junit"/>
@@ -422,13 +445,13 @@
           <dependency groupId="org.jboss.byteman" artifactId="byteman-bmunit" version="${byteman.version}"/>
 
 
-          <dependency groupId="org.openjdk.jmh" artifactId="jmh-core" version="1.13"/>
-          <dependency groupId="org.openjdk.jmh" artifactId="jmh-generator-annprocess" version="1.13"/>
+          <dependency groupId="org.openjdk.jmh" artifactId="jmh-core" version="1.21"/>
+          <dependency groupId="org.openjdk.jmh" artifactId="jmh-generator-annprocess" version="1.21"/>
 
           <dependency groupId="org.apache.cassandra" artifactId="cassandra-all" version="${version}" />
           <dependency groupId="org.apache.cassandra" artifactId="cassandra-thrift" version="${version}" />
-          <dependency groupId="io.dropwizard.metrics" artifactId="metrics-core" version="3.1.0" />
-          <dependency groupId="io.dropwizard.metrics" artifactId="metrics-jvm" version="3.1.0" />
+          <dependency groupId="io.dropwizard.metrics" artifactId="metrics-core" version="3.1.5" />
+          <dependency groupId="io.dropwizard.metrics" artifactId="metrics-jvm" version="3.1.5" />
           <dependency groupId="com.addthis.metrics" artifactId="reporter-config3" version="3.0.3" />
           <dependency groupId="org.mindrot" artifactId="jbcrypt" version="0.3m" />
           <dependency groupId="io.airlift" artifactId="airline" version="0.6" />
@@ -484,6 +507,7 @@
         <developer id="jmckenzie" name="Josh McKenzie"/>
         <developer id="johan" name="Johan Oskarsson"/>
         <developer id="junrao" name="Jun Rao"/>
+        <developer id="jzhuang" name="Jay Zhuang"/>
         <developer id="kohlisankalp" name="Sankalp Kohli"/>
         <developer id="marcuse" name="Marcus Eriksson"/>
         <developer id="mck" name="Michael Semb Wever"/>
@@ -577,7 +601,7 @@
 
       <artifact:pom id="all-pom"
                     artifactId="cassandra-all"
-                    url="http://cassandra.apache.org"
+                    url="https://cassandra.apache.org"
                     name="Apache Cassandra">
         <parent groupId="org.apache.cassandra"
                 artifactId="cassandra-parent"
@@ -603,6 +627,7 @@
         <dependency groupId="com.boundary" artifactId="high-scale-lib"/>
         <dependency groupId="org.yaml" artifactId="snakeyaml"/>
         <dependency groupId="org.mindrot" artifactId="jbcrypt"/>
+        <dependency groupId="io.airlift" artifactId="airline"/>
         <dependency groupId="io.dropwizard.metrics" artifactId="metrics-core"/>
         <dependency groupId="io.dropwizard.metrics" artifactId="metrics-jvm"/>
         <dependency groupId="com.addthis.metrics" artifactId="reporter-config3"/>
@@ -638,13 +663,14 @@
         <dependency groupId="org.fusesource" artifactId="sigar"/>
         <dependency groupId="org.eclipse.jdt.core.compiler" artifactId="ecj"/>
         <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core"/>
+        <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core-j8"/>
         <dependency groupId="com.github.ben-manes.caffeine" artifactId="caffeine" />
         <dependency groupId="org.jctools" artifactId="jctools-core"/>
         <dependency groupId="org.ow2.asm" artifactId="asm" />
       </artifact:pom>
       <artifact:pom id="thrift-pom"
                     artifactId="cassandra-thrift"
-                    url="http://cassandra.apache.org"
+                    url="https://cassandra.apache.org"
                     name="Apache Cassandra">
         <parent groupId="org.apache.cassandra"
                 artifactId="cassandra-parent"
@@ -660,16 +686,6 @@
         <dependency groupId="com.github.rholder" artifactId="snowball-stemmer" version="1.3.0.581.1" />
         <dependency groupId="com.googlecode.concurrent-trees" artifactId="concurrent-trees" version="2.4.0" />
 
-      </artifact:pom>
-      <artifact:pom id="dist-pom"
-                    artifactId="apache-cassandra"
-                    packaging="pom"
-                    url="http://cassandra.apache.org"
-                    name="Apache Cassandra">
-        <parent groupId="org.apache.cassandra"
-                artifactId="cassandra-parent"
-                version="${version}"/>
-        <scm connection="${scm.connection}" developerConnection="${scm.developerConnection}" url="${scm.url}"/>
       </artifact:pom>
     </target>
 
@@ -719,8 +735,8 @@
     <target name="maven-ant-tasks-retrieve-test" depends="maven-ant-tasks-init">
       <artifact:dependencies pomRefId="test-deps-pom"
                              filesetId="test-dependency-jars"
-                             sourcesFilesetId="test-dependency-sources" 
-                             cacheDependencyRefs="true" 
+                             sourcesFilesetId="test-dependency-sources"
+                             cacheDependencyRefs="true"
                              dependencyRefsBuildFile="${build.dir}/test-dependencies.xml">
         <remoteRepository refid="apache"/>
         <remoteRepository refid="central"/>
@@ -903,7 +919,7 @@
 	<target name="write-poms" unless="without.maven">
 	    <antcall target="_write-poms" />
 	</target>
-	
+
     <!--
         The jar target makes cassandra.jar output.
     -->
@@ -994,7 +1010,7 @@
       <jar jarfile="${build.dir}/${final.name}-javadoc.jar"
            basedir="${javadoc.jars.dir}/main"/>
 
-      <!-- javadoc task always rebuilds so might as well remove the generated docs to prevent 
+      <!-- javadoc task always rebuilds so might as well remove the generated docs to prevent
            being pulled into the distribution by accident -->
       <delete quiet="true" dir="${javadoc.jars.dir}"/>
     </target>
@@ -1082,8 +1098,6 @@
             <include name="*.jar" />
         </fileset>
       </copy>
-      <artifact:writepom pomRefId="dist-pom" 
-            file="${build.dir}/${final.name}-dist.pom"/>
       <tar compression="gzip" longfile="gnu"
         destfile="${build.dir}/${final.name}-bin.tar.gz">
 
@@ -1135,23 +1149,22 @@
           <exclude name="bin/*.bat" />
         </tarfileset>
       </tar>
+
+      <checksum forceOverwrite="yes" todir="${build.dir}" fileext=".sha256" algorithm="SHA-256">
+        <fileset dir="${build.dir}">
+          <include name="${final.name}-bin.tar.gz" />
+          <include name="${final.name}-src.tar.gz" />
+        </fileset>
+      </checksum>
+      <checksum forceOverwrite="yes" todir="${build.dir}" fileext=".sha512" algorithm="SHA-512">
+        <fileset dir="${build.dir}">
+          <include name="${final.name}-bin.tar.gz" />
+          <include name="${final.name}-src.tar.gz" />
+        </fileset>
+      </checksum>
     </target>
 
-    <target name="release" depends="eclipse-warnings,artifacts,rat-init"
-            description="Create and QC release artifacts">
-      <checksum forceOverwrite="yes" todir="${build.dir}" fileext=".md5"
-                algorithm="MD5">
-        <fileset dir="${build.dir}">
-          <include name="*.tar.gz" />
-        </fileset>
-      </checksum>
-      <checksum forceOverwrite="yes" todir="${build.dir}" fileext=".sha"
-                algorithm="SHA">
-        <fileset dir="${build.dir}">
-          <include name="*.tar.gz" />
-        </fileset>
-      </checksum>
-
+    <target name="rat" depends="rat-init" description="License checks on artifacts">
       <rat:report xmlns:rat="antlib:org.apache.rat.anttasks"
                   reportFile="${build.dir}/${final.name}-bin.rat.txt">
         <tarfileset>
@@ -1160,7 +1173,6 @@
           </gzipresource>
         </tarfileset>
       </rat:report>
-
       <rat:report xmlns:rat="antlib:org.apache.rat.anttasks"
                   reportFile="${build.dir}/${final.name}-src.rat.txt">
         <tarfileset>
@@ -1190,9 +1202,6 @@
       </jar>
   </target>
 
-    <!-- use https://github.com/krummas/jstackjunit to get thread dumps when unit tests time out -->
-  <taskdef name="junit" classname="org.krummas.junit.JStackJUnitTask" classpath="lib/jstackjunit-0.0.1.jar"/>
-
   <target name="build-test" depends="build" description="Compile test classes">
     <javac
      compiler="modern"
@@ -1200,7 +1209,7 @@
      debuglevel="${debuglevel}"
      destdir="${test.classes}"
      includeantruntime="true"
-     source="${source.version}" 
+     source="${source.version}"
      target="${target.version}"
      encoding="utf-8">
      <classpath>
@@ -1211,6 +1220,7 @@
      <src path="${test.long.src}"/>
      <src path="${test.burn.src}"/>
      <src path="${test.microbench.src}"/>
+     <src path="${test.distributed.src}"/>
     </javac>
 
     <!-- Non-java resources needed by the test suite -->
@@ -1235,6 +1245,7 @@
     <attribute name="poffset" default="0"/>
     <attribute name="testtag" default=""/>
     <attribute name="usejacoco" default="no"/>
+    <attribute name="showoutput" default="false"/>
 
     <sequential>
       <condition property="additionalagent"
@@ -1242,10 +1253,12 @@
                  else="">
         <istrue value="${usejacoco}"/>
       </condition>
+      <!-- use https://github.com/krummas/jstackjunit to get thread dumps when unit tests time out -->
+      <taskdef name="junit-timeout" classname="org.krummas.junit.JStackJUnitTask" classpath="lib/jstackjunit-0.0.1.jar"/>
       <mkdir dir="${build.test.dir}/cassandra"/>
       <mkdir dir="${build.test.dir}/output"/>
       <mkdir dir="${build.test.dir}/output/@{testtag}"/>
-      <junit fork="on" forkmode="@{forkmode}" failureproperty="testfailed" maxmemory="1024m" timeout="@{timeout}">
+      <junit-timeout fork="on" forkmode="@{forkmode}" failureproperty="testfailed" maxmemory="1024m" timeout="@{timeout}" showoutput="@{showoutput}">
         <formatter classname="org.apache.cassandra.CassandraXMLJUnitResultFormatter" extension=".xml" usefile="true"/>
         <formatter classname="org.apache.cassandra.CassandraBriefJUnitResultFormatter" usefile="false"/>
         <jvmarg value="-Dstorage-config=${test.conf}"/>
@@ -1255,6 +1268,13 @@
         <jvmarg value="-ea"/>
         <jvmarg value="-Dcassandra.debugrefcount=true"/>
         <jvmarg value="-Xss256k"/>
+        <!-- When we do classloader manipulation SoftReferences can cause memory leaks
+             that can OOM our test runs. The next two settings informs our GC
+             algorithm to limit the metaspace size and clean up SoftReferences
+             more aggressively rather than waiting. See CASSANDRA-14922 for more details.
+        -->
+        <jvmarg value="-XX:MaxMetaspaceSize=384M" />
+        <jvmarg value="-XX:SoftRefLRUPolicyMSPerMB=0" />
         <jvmarg value="-Dcassandra.memtable_row_overhead_computation_step=100"/>
         <jvmarg value="-Dcassandra.test.use_prepared=${cassandra.test.use_prepared}"/>
         <jvmarg value="-Dcassandra.test.offsetseed=@{poffset}"/>
@@ -1263,6 +1283,7 @@
         <jvmarg value="-Djava.security.egd=file:/dev/urandom" />
         <jvmarg value="-Dcassandra.testtag=@{testtag}"/>
         <jvmarg value="-Dcassandra.keepBriefBrief=${cassandra.keepBriefBrief}" />
+        <jvmarg value="-Dcassandra.strict.runtime.checks=true" />
 	<optjvmargs/>
         <classpath>
           <pathelement path="${java.class.path}"/>
@@ -1279,7 +1300,7 @@
             <fileset dir="@{inputdir}" includes="@{filter}" excludes="@{exclude}"/>
             <filelist dir="@{inputdir}" files="@{filelist}"/>
         </batchtest>
-      </junit>
+      </junit-timeout>
 
       <condition property="fileSep" value=";">
         <os family="windows"/>
@@ -1309,14 +1330,14 @@
     </testmacro>
     <fileset dir="${test.unit.src}" />
   </target>
-  
+
   <!-- Will not generate a junit report or fail on error since it is called in parallel for test-compression
        That is taken care of by testparallel -->
   <macrodef name="testlist">
     <attribute name="test.file.list"/>
     <attribute name="testlist.offset"/>
     <sequential>
-      <testmacrohelper inputdir="${test.unit.src}" filelist="@{test.file.list}" poffset="@{testlist.offset}" exclude="**/*.java" timeout="${test.timeout}">
+      <testmacrohelper inputdir="${test.dir}/${test.classlistprefix}" filelist="@{test.file.list}" poffset="@{testlist.offset}" exclude="**/*.java" timeout="${test.timeout}">
         <jvmarg value="-Dlegacy-sstable-root=${test.data}/legacy-sstables"/>
         <jvmarg value="-Dinvalid-legacy-sstable-root=${test.data}/invalid-legacy-sstables"/>
         <jvmarg value="-Dmigration-sstable-root=${test.data}/migration-sstables"/>
@@ -1335,6 +1356,10 @@
     <attribute name="testlist.offset" />
     <sequential>
       <property name="compressed_yaml" value="${build.test.dir}/cassandra.compressed.yaml"/>
+      <concat destfile="${compressed_yaml}">
+          <fileset file="${test.conf}/cassandra.yaml"/>
+          <fileset file="${test.conf}/commitlog_compression.yaml"/>
+      </concat>
       <testmacrohelper inputdir="${test.unit.src}" filelist="@{test.file.list}" poffset="@{testlist.offset}"
                        exclude="**/*.java" timeout="${test.timeout}" testtag="compression">
         <jvmarg value="-Dlegacy-sstable-root=${test.data}/legacy-sstables"/>
@@ -1386,7 +1411,7 @@
   -->
   <target name="testsome" depends="build-test" description="Execute specific unit tests" >
     <testmacro inputdir="${test.unit.src}" timeout="${test.timeout}">
-      <test name="${test.name}" methods="${test.methods}"/>
+      <test name="${test.name}" methods="${test.methods}" outfile="build/test/output/TEST-${test.name}-${test.methods}"/>
       <jvmarg value="-Dlegacy-sstable-root=${test.data}/legacy-sstables"/>
       <jvmarg value="-Dinvalid-legacy-sstable-root=${test.data}/invalid-legacy-sstables"/>
       <jvmarg value="-Dmigration-sstable-root=${test.data}/migration-sstables"/>
@@ -1395,7 +1420,15 @@
       <jvmarg value="-Dcassandra.skip_sync=true" />
     </testmacro>
   </target>
-    
+
+  <!-- Use this with an FQDN for test class, and a csv list of methods like this:
+    ant burn-testsome -Dtest.name=org.apache.cassandra.utils.memory.LongBufferPoolTest -Dtest.methods=testAllocate
+  -->
+  <target name="burn-testsome" depends="build-test" description="Execute specific burn unit tests" >
+    <testmacro inputdir="${test.burn.src}" timeout="${test.burn.timeout}">
+      <test name="${test.name}" methods="${test.methods}"/>
+    </testmacro>
+  </target>
   <target name="test-compression" depends="build-test,stress-build" description="Execute unit tests with sstable compression enabled">
     <property name="compressed_yaml" value="${build.test.dir}/cassandra.compressed.yaml"/>
     <concat destfile="${compressed_yaml}">
@@ -1404,6 +1437,7 @@
     </concat>
     <path id="all-test-classes-path">
       <fileset dir="${test.unit.src}" includes="**/${test.name}.java" />
+      <fileset dir="${test.distributed.src}" includes="**/${test.name}.java" />
     </path>
     <property name="all-test-classes" refid="all-test-classes-path"/>
     <testparallel testdelegate="testlist-compression" />
@@ -1433,7 +1467,7 @@
       <testmacro inputdir="${test.unit.src}" timeout="${test.timeout}"
                filter="**/SerializationsTest.java"/>
   </target>
-  
+
   <target name="msg-ser-test-7" depends="build-test" description="Generates message serializations">
     <testmacro inputdir="${test.unit.src}"
         timeout="${test.timeout}" filter="**/SerializationsTest.java">
@@ -1532,10 +1566,6 @@
     </sequential>
   </target>
 
-  <target name="test-all" 
-          depends="eclipse-warnings,test,long-test,test-compression,stress-test"
-          description="Run all tests except for those under test-burn" />
-  
   <!-- Use JaCoCo ant extension without needing externally saved lib -->
   <target name="jacoco-init" depends="maven-ant-tasks-init">
     <artifact:dependencies pathId="jacocoant.classpath">
@@ -1591,7 +1621,7 @@
   </target>
 
   <target name="rat-check" depends="rat-init">
-    <rat:report xmlns:rat="antlib:org.apache.rat.anttasks"  
+    <rat:report xmlns:rat="antlib:org.apache.rat.anttasks"
                 reportFile="${build.dir}/rat-report.log">
       <fileset dir="."  excludesfile=".rat-excludes" />
     </rat:report>
@@ -1632,6 +1662,7 @@
     <attribute name="inputdir" />
     <attribute name="timeout" default="${test.timeout}" />
     <attribute name="forkmode" default="perTest"/>
+    <attribute name="showoutput" default="true"/>
     <element name="optjvmargs" implicit="true" optional="true" />
     <attribute name="filter" default="**/${test.name}.java"/>
     <attribute name="exclude" default="" />
@@ -1643,7 +1674,7 @@
       <testmacrohelper inputdir="@{inputdir}" timeout="@{timeout}"
                        forkmode="@{forkmode}" filter="@{filter}"
                        exclude="@{exclude}" filelist="@{filelist}" poffset="@{poffset}"
-                       testtag="@{testtag}" >
+                       testtag="@{testtag}" showoutput="false" >
           <optjvmargs/>
       </testmacrohelper>
       <junitreport todir="${build.test.dir}">
@@ -1770,9 +1801,9 @@
     <echo message="Mem size : ${mem.size}"/>
   </target>
 
-  <target name="test" depends="build-test,get-cores,get-mem,stress-build" description="Parallel Test Runner">
+  <target name="test" depends="eclipse-warnings,build-test,get-cores,get-mem" description="Parallel Test Runner">
     <path id="all-test-classes-path">
-      <fileset dir="${test.unit.src}" includes="**/${test.name}.java" />
+      <fileset dir="${test.unit.src}" includes="**/${test.name}.java" excludes="**/distributed/test/UpgradeTest*.java" />
     </path>
     <property name="all-test-classes" refid="all-test-classes-path"/>
     <testparallel testdelegate="testlist"/>
@@ -1783,10 +1814,104 @@
   e.g. org/apache/cassandra/hints/HintMessageTest.java -->
   <target name="testclasslist" depends="build-test" description="Parallel-run tests given in file -Dtest.classlistfile (one-class-per-line, e.g. org/apache/cassandra/db/SomeTest.java)">
     <path id="all-test-classes-path">
-      <fileset dir="${test.unit.src}" includesfile="${test.classlistfile}"/>
+      <fileset dir="${test.dir}/${test.classlistprefix}" includesfile="${test.classlistfile}"/>
     </path>
     <property name="all-test-classes" refid="all-test-classes-path"/>
     <testparallel testdelegate="testlist"/>
+  </target>
+  <target name="testclasslist-compression" depends="build-test" description="Parallel-run tests given in file -Dtest.classlistfile (one-class-per-line, e.g. org/apache/cassandra/db/SomeTest.java)">
+      <path id="all-test-classes-path">
+          <fileset dir="${test.dir}/${test.classlistprefix}" includesfile="${test.classlistfile}"/>
+      </path>
+      <property name="all-test-classes" refid="all-test-classes-path"/>
+      <testparallel testdelegate="testlist-compression"/>
+  </target>
+
+  <!-- In-JVM dtest targets -->
+  <target name="list-jvm-dtests" depends="build-test">
+    <java classname="org.apache.cassandra.distributed.test.TestLocator" fork="no">
+          <classpath>
+              <path refid="cassandra.classpath" />
+              <pathelement location="${test.classes}"/>
+              <pathelement location="${test.conf}"/>
+              <fileset dir="${test.lib}">
+                  <include name="**/*.jar" />
+              </fileset>
+          </classpath>
+        <arg value="${test.distributed.listfile}"/>
+    </java>
+  </target>
+
+  <target name="test-jvm-dtest-forking" depends="list-jvm-dtests" description="Execute In-JVM 'distributed' tests" >
+    <chmod file="${test.distributed.listfile}" perm="+x"/>
+    <exec executable="./${test.distributed.listfile}" failonerror="true"/>
+    <delete file="${test.distributed.listfile}"/>
+  </target>
+
+  <target name="dtest-jar" depends="build-test, build" description="Create dtest-compatible jar, including all dependencies">
+      <jar jarfile="${build.dir}/dtest-${base.version}.jar">
+          <zipgroupfileset dir="${build.lib}" includes="*.jar" excludes="META-INF/*.SF"/>
+          <fileset dir="${build.classes.main}"/>
+          <fileset dir="${test.classes}"/>
+          <fileset dir="${test.conf}" />
+      </jar>
+  </target>
+
+  <target name="test-jvm-dtest" depends="build-test" description="Execute in-jvm dtests">
+    <testmacro inputdir="${test.distributed.src}" timeout="${test.distributed.timeout}" forkmode="once" showoutput="true" filter="**/test/*Test.java">
+      <jvmarg value="-Dlogback.configurationFile=test/conf/logback-dtest.xml"/>
+      <jvmarg value="-Dcassandra.ring_delay_ms=10000"/>
+      <jvmarg value="-Dcassandra.tolerate_sstable_size=true"/>
+      <jvmarg value="-Djava.io.tmpdir=${tmp.dir}"/>
+      <jvmarg value="-Dcassandra.skip_sync=true" />
+    </testmacro>
+  </target>
+
+  <!-- In-JVM upgrade dtests -->
+  <target name="list-jvm-upgrade-dtests" depends="build-test">
+    <java classname="org.apache.cassandra.distributed.test.TestLocator" fork="no">
+          <classpath>
+              <path refid="cassandra.classpath" />
+              <pathelement location="${test.classes}"/>
+              <pathelement location="${test.conf}"/>
+              <fileset dir="${test.lib}">
+                  <include name="**/*.jar" />
+              </fileset>
+          </classpath>
+          <arg value="${test.distributed.upgrade.listfile}"/>
+          <arg value="${test.distributed.upgrade.package}"/>
+    </java>
+  </target>
+
+  <target name="test-jvm-upgrade-dtest-forking" depends="list-jvm-upgrade-dtests" description="Execute In-JVM 'distributed' upgrade tests" >
+    <chmod file="${test.distributed.upgrade.listfile}" perm="+x"/>
+    <exec executable="./${test.distributed.upgrade.listfile}" failonerror="true"/>
+    <delete file="${test.distributed.upgrade.listfile}"/>
+  </target>
+
+  <target name="test-jvm-upgrade-dtest" depends="build-test" description="Execute in-jvm dtests">
+    <testmacro inputdir="${test.distributed.src}" timeout="${test.distributed.timeout}" forkmode="once" showoutput="true" filter="**/upgrade/*Test.java">
+      <jvmarg value="-Dlogback.configurationFile=test/conf/logback-dtest.xml"/>
+      <jvmarg value="-Dcassandra.ring_delay_ms=10000"/>
+      <jvmarg value="-Dcassandra.tolerate_sstable_size=true"/>
+      <jvmarg value="-Djava.io.tmpdir=${tmp.dir}"/>
+      <jvmarg value="-Dcassandra.skip_sync=true" />
+      <jvmarg value="-XX:MaxMetaspaceSize=512M"/>
+    </testmacro>
+  </target>
+
+  <!-- Use this with an FQDN for test class, and a csv list of methods like this:
+      ant test-jvm-dtest-some -Dtest.name=org.apache.cassandra.distributed.test.ResourceLeakTest -Dtest.methods=looperTest
+    -->
+  <target name="test-jvm-dtest-some" depends="build-test" description="Execute some in-jvm dtests">
+    <testmacro inputdir="${test.distributed.src}" timeout="${test.distributed.timeout}" forkmode="once" showoutput="true">
+      <test name="${test.name}" methods="${test.methods}" outfile="build/test/output/TEST-${test.name}-${test.methods}"/>
+      <jvmarg value="-Dlogback.configurationFile=test/conf/logback-dtest.xml"/>
+      <jvmarg value="-Dcassandra.ring_delay_ms=10000"/>
+      <jvmarg value="-Dcassandra.tolerate_sstable_size=true"/>
+      <jvmarg value="-Djava.io.tmpdir=${tmp.dir}"/>
+      <jvmarg value="-Dcassandra.skip_sync=true" />
+    </testmacro>
   </target>
 
   <!-- run microbenchmarks suite -->
@@ -1803,6 +1928,31 @@
               </fileset>
           </classpath>
           <arg value=".*microbench.*${benchmark.name}"/>
+      </java>
+  </target>
+
+  <!-- run arbitrary mains in tests, for example to run the long running memory tests with lots of memory pressure
+      ant run-main -Dmainclass=org.apache.cassandra.utils.memory.LongBufferPoolTest -Dvmargs="-Xmx30m -XX:-UseGCOverheadLimit"
+  -->
+  <target name="run-main" depends="build-test">
+      <property name="mainclass" value="" />
+      <property name="vmargs" value="" />
+      <property name="args" value="" />
+      <java classname="${mainclass}"
+            fork="true"
+            failonerror="true">
+          <jvmarg value="-server" />
+          <jvmarg value="-ea" />
+          <jvmarg line="${vmargs}" />
+          <arg line="${args}" />
+          <classpath>
+              <path refid="cassandra.classpath" />
+              <pathelement location="${test.classes}"/>
+              <pathelement location="${test.conf}"/>
+              <fileset dir="${test.lib}">
+                  <include name="**/*.jar" />
+              </fileset>
+          </classpath>
       </java>
   </target>
 
@@ -1852,6 +2002,7 @@
   <classpathentry kind="src" path="interface/thrift/gen-java"/>
   <classpathentry kind="src" output="build/test/classes" path="test/unit"/>
   <classpathentry kind="src" output="build/test/classes" path="test/long"/>
+  <classpathentry kind="src" output="build/test/classes" path="test/distributed"/>
   <classpathentry kind="src" output="build/test/classes" path="test/resources" />
   <classpathentry kind="src" path="tools/stress/src"/>
   <classpathentry kind="src" output="build/test/stress-classes" path="tools/stress/test/unit" />
@@ -1861,7 +2012,7 @@
   <classpathentry kind="lib" path="test/conf"/>
   <classpathentry kind="lib" path="${java.home}/../lib/tools.jar"/>
 ]]>
-	</echo>	  
+	</echo>
   	<path id="eclipse-project-libs-path">
   	 <fileset dir="lib">
   	    <include name="**/*.jar" />
@@ -1875,27 +2026,27 @@
   		var File = java.io.File;
   		var FilenameUtils = Packages.org.apache.commons.io.FilenameUtils;
   		jars = project.getProperty("eclipse-project-libs").split(project.getProperty("path.separator"));
-  		
+
   		cp = "";
   	    for (i=0; i< jars.length; i++) {
   	       srcjar = FilenameUtils.getBaseName(jars[i]) + '-sources.jar';
   		   srcdir = FilenameUtils.concat(project.getProperty("build.dir.lib"), 'sources');
   		   srcfile = new File(FilenameUtils.concat(srcdir, srcjar));
-  		
+
   		   cp += ' <classpathentry kind="lib" path="' + jars[i] + '"';
   		   if (srcfile.exists()) {
   		      cp += ' sourcepath="' + srcfile.getAbsolutePath() + '"';
   		   }
   		   cp += '/>\n';
   		}
-  		
+
   		cp += '</classpath>';
-  	    
+
   		echo = project.createTask("echo");
   	    echo.setMessage(cp);
   		echo.setFile(new File(".classpath"));
   		echo.setAppend(true);
-  	    echo.perform();	     
+  	    echo.perform();
   	]]> </script>
     <mkdir dir=".settings" />
   </target>
@@ -1915,29 +2066,29 @@
   </target>
 
 
-  <target name="eclipse-warnings" depends="build" description="Run eclipse compiler code analysis">        
+  <target name="eclipse-warnings" depends="build" description="Run eclipse compiler code analysis">
         <property name="ecj.log.dir" value="${build.dir}/ecj" />
         <property name="ecj.warnings.file" value="${ecj.log.dir}/eclipse_compiler_checks.txt"/>
         <mkdir  dir="${ecj.log.dir}" />
 
-        <property name="ecj.properties" value="${basedir}/eclipse_compiler.properties" />                
+        <property name="ecj.properties" value="${basedir}/eclipse_compiler.properties" />
 
-        <echo message="Running Eclipse Code Analysis.  Output logged to ${ecj.warnings.file}" />        
-        
-	<java 
+        <echo message="Running Eclipse Code Analysis.  Output logged to ${ecj.warnings.file}" />
+
+	<java
 	    jar="${build.dir.lib}/jars/ecj-${ecj.version}.jar"
             fork="true"
 	    failonerror="true"
-            maxmemory="512m"> 
+            maxmemory="512m">
             <arg value="-source"/>
-	    <arg value="${source.version}" /> 
+	    <arg value="${source.version}" />
 	    <arg value="-target"/>
-	    <arg value="${target.version}" /> 
+	    <arg value="${target.version}" />
 	    <arg value="-d" />
             <arg value="none" />
-	    <arg value="-proc:none" /> 
+	    <arg value="-proc:none" />
             <arg value="-log" />
-            <arg value="${ecj.warnings.file}" /> 
+            <arg value="${ecj.warnings.file}" />
             <arg value="-properties" />
             <arg value="${ecj.properties}" />
             <arg value="-cp" />
@@ -1945,32 +2096,19 @@
             <arg value="${build.src.java}" />
         </java>
   </target>
-  
 
-  <!-- Publish artifacts to Maven repositories -->
+
+  <!-- Installs artifacts to local Maven repository -->
   <target name="mvn-install"
-          depends="maven-declare-dependencies,artifacts,jar,sources-jar,javadoc-jar"
+          depends="maven-declare-dependencies,jar,sources-jar,javadoc-jar"
           description="Installs the artifacts in the Maven Local Repository">
-          
+
     <!-- the parent -->
     <install pomFile="${build.dir}/${final.name}-parent.pom"
              file="${build.dir}/${final.name}-parent.pom"
              packaging="pom"/>
 
-    <!-- the distribution -->
-    <install pomFile="${build.dir}/${final.name}-dist.pom"
-             file="${build.dir}/${final.name}-dist.pom"
-             packaging="pom"/>
-    <install pomFile="${build.dir}/${final.name}-dist.pom"
-             file="${build.dir}/${final.name}-bin.tar.gz"
-             packaging="tar.gz"
-             classifier="bin"/>
-    <install pomFile="${build.dir}/${final.name}-dist.pom"
-             file="${build.dir}/${final.name}-src.tar.gz"
-             packaging="tar.gz"
-             classifier="src"/>
-          
-    <!-- the cassandra-thrift jar -->  
+    <!-- the cassandra-thrift jar -->
     <install pomFile="${build.dir}/${ant.project.name}-thrift-${version}.pom"
              file="${build.dir}/${ant.project.name}-thrift-${version}.jar"/>
     <install pomFile="${build.dir}/${ant.project.name}-thrift-${version}.pom"
@@ -1991,30 +2129,18 @@
              classifier="javadoc"/>
   </target>
 
+  <!-- Publish artifacts to remote Maven repository -->
   <target name="publish"
-          depends="mvn-install"
+          depends="mvn-install,artifacts"
           if="release"
           description="Publishes the artifacts to the Maven repository">
-          
+
     <!-- the parent -->
     <deploy pomFile="${build.dir}/${final.name}-parent.pom"
             file="${build.dir}/${final.name}-parent.pom"
             packaging="pom"/>
 
-    <!-- the distribution -->
-    <deploy pomFile="${build.dir}/${final.name}-dist.pom"
-            file="${build.dir}/${final.name}-dist.pom"
-            packaging="pom"/>
-    <deploy pomFile="${build.dir}/${final.name}-dist.pom"
-            file="${build.dir}/${final.name}-bin.tar.gz"
-            packaging="tar.gz"
-            classifier="bin"/>
-    <deploy pomFile="${build.dir}/${final.name}-dist.pom"
-            file="${build.dir}/${final.name}-src.tar.gz"
-            packaging="tar.gz"
-            classifier="src"/>
-          
-    <!-- the cassandra-thrift jar -->  
+    <!-- the cassandra-thrift jar -->
     <deploy pomFile="${build.dir}/${ant.project.name}-thrift-${version}.pom"
             file="${build.dir}/${ant.project.name}-thrift-${version}.jar"/>
     <deploy pomFile="${build.dir}/${ant.project.name}-thrift-${version}.pom"
@@ -2033,6 +2159,11 @@
     <deploy pomFile="${build.dir}/${final.name}.pom"
             file="${build.dir}/${final.name}-javadoc.jar"
             classifier="javadoc"/>
+
+    <!-- the distribution -->
+    <sign-dist file="${build.dir}/${final.name}-bin.tar.gz" />
+    <sign-dist file="${build.dir}/${final.name}-src.tar.gz" />
+
   </target>
 
 </project>

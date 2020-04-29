@@ -20,6 +20,7 @@ package org.apache.cassandra.cql3.validation.entities;
 import org.apache.cassandra.cql3.Json;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.Duration;
+import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.dht.ByteOrderedPartitioner;
 
 import org.apache.cassandra.serializers.SimpleDateSerializer;
@@ -37,6 +38,8 @@ import java.net.InetAddress;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
+
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 public class JsonTest extends CQLTester
@@ -249,6 +252,13 @@ public class JsonTest extends CQLTester
 
         // handle nulls
         execute("INSERT INTO %s (k, asciival) VALUES (?, fromJson(?))", 0, null);
+        assertRows(execute("SELECT k, asciival FROM %s WHERE k = ?", 0), row(0, null));
+
+        execute("INSERT INTO %s (k, frozenmapval) VALUES (?, fromJson(?))", 0, null);
+        assertRows(execute("SELECT k, frozenmapval FROM %s WHERE k = ?", 0), row(0, null));
+
+        execute("INSERT INTO %s (k, udtval) VALUES (?, fromJson(?))", 0, null);
+        assertRows(execute("SELECT k, udtval FROM %s WHERE k = ?", 0), row(0, null));
 
         // ================ ascii ================
         execute("INSERT INTO %s (k, asciival) VALUES (?, fromJson(?))", 0, "\"ascii text\"");
@@ -928,10 +938,35 @@ public class JsonTest extends CQLTester
 
         // ================ duration ================
         execute("INSERT INTO %s (k, durationval) VALUES (?, 12µs)", 0);
-        assertRows(execute("SELECT k, toJson(durationval) FROM %s WHERE k = ?", 0), row(0, "12us"));
+        assertRows(execute("SELECT k, toJson(durationval) FROM %s WHERE k = ?", 0), row(0, "\"12us\""));
 
         execute("INSERT INTO %s (k, durationval) VALUES (?, P1Y1M2DT10H5M)", 0);
-        assertRows(execute("SELECT k, toJson(durationval) FROM %s WHERE k = ?", 0), row(0, "1y1mo2d10h5m"));
+        assertRows(execute("SELECT k, toJson(durationval) FROM %s WHERE k = ?", 0), row(0, "\"1y1mo2d10h5m\""));
+    }
+
+    @Test
+    public void testJsonWithGroupBy() throws Throwable
+    {
+        // tests SELECT JSON statements
+        createTable("CREATE TABLE %s (k int, c int, v int, PRIMARY KEY (k, c))");
+        execute("INSERT INTO %s (k, c, v) VALUES (0, 0, 0)");
+        execute("INSERT INTO %s (k, c, v) VALUES (0, 1, 1)");
+        execute("INSERT INTO %s (k, c, v) VALUES (1, 0, 1)");
+
+        assertRows(execute("SELECT JSON * FROM %s GROUP BY k"),
+                   row("{\"k\": 0, \"c\": 0, \"v\": 0}"),
+                   row("{\"k\": 1, \"c\": 0, \"v\": 1}")
+        );
+
+        assertRows(execute("SELECT JSON k, c, v FROM %s GROUP BY k"),
+                   row("{\"k\": 0, \"c\": 0, \"v\": 0}"),
+                   row("{\"k\": 1, \"c\": 0, \"v\": 1}")
+        );
+
+        assertRows(execute("SELECT JSON count(*) FROM %s GROUP BY k"),
+                row("{\"count\": 2}"),
+                row("{\"count\": 1}")
+        );
     }
 
     @Test
@@ -1322,5 +1357,114 @@ public class JsonTest extends CQLTester
 
         executor.shutdown();
         Assert.assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS));
+    }
+
+   @Test
+    public void emptyStringJsonSerializationTest() throws Throwable
+    {
+        createTable("create table %s(id INT, name TEXT, PRIMARY KEY(id));");
+        execute("insert into %s(id, name) VALUES (0, 'Foo');");
+        execute("insert into %s(id, name) VALUES (2, '');");
+        execute("insert into %s(id, name) VALUES (3, null);");
+
+        assertRows(execute("SELECT JSON * FROM %s"),
+                   row("{\"id\": 0, \"name\": \"Foo\"}"),
+                   row("{\"id\": 2, \"name\": \"\"}"),
+                   row("{\"id\": 3, \"name\": null}"));
+    }
+
+    // CASSANDRA-14286
+    @Test
+    public void testJsonOrdering() throws Throwable
+    {
+        createTable("CREATE TABLE %s( PRIMARY KEY (a, b), a INT, b INT);");
+        execute("INSERT INTO %s(a, b) VALUES (20, 30);");
+        execute("INSERT INTO %s(a, b) VALUES (100, 200);");
+
+        assertRows(execute("SELECT JSON a, b FROM %s WHERE a IN (20, 100) ORDER BY b"),
+                   row("{\"a\": 20, \"b\": 30}"),
+                   row("{\"a\": 100, \"b\": 200}"));
+
+        assertRows(execute("SELECT JSON a, b FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100, \"b\": 200}"),
+                   row("{\"a\": 20, \"b\": 30}"));
+
+        assertRows(execute("SELECT JSON a FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100}"),
+                   row("{\"a\": 20}"));
+
+        // Check ordering with alias 
+        assertRows(execute("SELECT JSON a, b as c FROM %s WHERE a IN (20, 100) ORDER BY b"),
+                   row("{\"a\": 20, \"c\": 30}"),
+                   row("{\"a\": 100, \"c\": 200}"));
+
+        assertRows(execute("SELECT JSON a, b as c FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100, \"c\": 200}"),
+                   row("{\"a\": 20, \"c\": 30}"));
+
+        // Check ordering with CAST 
+        assertRows(execute("SELECT JSON a, CAST(b AS FLOAT) FROM %s WHERE a IN (20, 100) ORDER BY b"),
+                   row("{\"a\": 20, \"cast(b as float)\": 30.0}"),
+                   row("{\"a\": 100, \"cast(b as float)\": 200.0}"));
+
+        assertRows(execute("SELECT JSON a, CAST(b AS FLOAT) FROM %s WHERE a IN (20, 100) ORDER BY b DESC"),
+                   row("{\"a\": 100, \"cast(b as float)\": 200.0}"),
+                   row("{\"a\": 20, \"cast(b as float)\": 30.0}"));
+    }
+
+    @Test
+     public void testInsertAndSelectJsonSyntaxWithEmptyAndNullValues() throws Throwable
+     {
+         createTable("create table %s(id INT, name TEXT, name_asc ASCII, bytes BLOB, PRIMARY KEY(id));");
+
+         // Test with empty values
+
+         execute("INSERT INTO %s JSON ?", "{\"id\": 0, \"bytes\": \"0x\", \"name\": \"\", \"name_asc\": \"\"}");
+         assertRows(execute("SELECT * FROM %s WHERE id=0"), row(0, ByteBufferUtil.EMPTY_BYTE_BUFFER, "", ""));
+         assertRows(execute("SELECT JSON * FROM %s WHERE id = 0"),
+                    row("{\"id\": 0, \"bytes\": \"0x\", \"name\": \"\", \"name_asc\": \"\"}"));
+
+         execute("INSERT INTO %s(id, name, name_asc, bytes) VALUES (1, ?, ?, ?);", "", "", ByteBufferUtil.EMPTY_BYTE_BUFFER);
+         assertRows(execute("SELECT * FROM %s WHERE id=1"), row(1, ByteBufferUtil.EMPTY_BYTE_BUFFER, "", ""));
+         assertRows(execute("SELECT JSON * FROM %s WHERE id = 1"),
+                    row("{\"id\": 1, \"bytes\": \"0x\", \"name\": \"\", \"name_asc\": \"\"}"));
+
+         // Test with null values
+
+         execute("INSERT INTO %s JSON ?", "{\"id\": 2, \"bytes\": null, \"name\": null, \"name_asc\": null}");
+         assertRows(execute("SELECT * FROM %s WHERE id=2"), row(2, null, null, null));
+         assertRows(execute("SELECT JSON * FROM %s WHERE id = 2"),
+                    row("{\"id\": 2, \"bytes\": null, \"name\": null, \"name_asc\": null}"));
+
+         execute("INSERT INTO %s(id, name, name_asc, bytes) VALUES (3, ?, ?, ?);", null, null, null);
+         assertRows(execute("SELECT * FROM %s WHERE id=3"), row(3, null, null, null));
+         assertRows(execute("SELECT JSON * FROM %s WHERE id = 3"),
+                 row("{\"id\": 3, \"bytes\": null, \"name\": null, \"name_asc\": null}"));
+     }
+
+    @Test
+    public void testJsonWithNaNAndInfinity() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int PRIMARY KEY, f1 float, f2 float, f3 float, d1 double, d2 double, d3 double)");
+        execute("INSERT INTO %s (pk, f1, f2, f3, d1, d2, d3) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                1, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY);
+
+        // JSON does not support NaN, Infinity and -Infinity values. Most of the parser convert them into null.
+        assertRows(execute("SELECT JSON * FROM %s"), row("{\"pk\": 1, \"d1\": null, \"d2\": null, \"d3\": null, \"f1\": null, \"f2\": null, \"f3\": null}"));
+    }
+
+    @Test
+    public void testDurationJsonRoundtrip() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int PRIMARY KEY, d duration)");
+        execute("INSERT INTO %s (pk, d) VALUES (1, 6h40m)");
+        UntypedResultSet res = execute("SELECT JSON * FROM %s WHERE pk = 1");
+        UntypedResultSet.Row r = res.one();
+        String json = r.getString("[json]");
+        execute("DELETE FROM %s WHERE pk = 1");
+        execute("INSERT INTO %s JSON '"+json+"'");
+        res = execute("SELECT JSON * FROM %s WHERE pk = 1");
+        assertEquals(json, res.one().getString("[json]"));
+
     }
 }

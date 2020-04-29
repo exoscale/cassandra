@@ -275,6 +275,9 @@ Table of Contents
       mode. This mode will make all Thrift and Compact Tables to be exposed as if
       they were CQL Tables. This is optional; if not specified, the option will
       not be used.
+    - "THROW_ON_OVERLOAD": In case of server overloaded with too many requests, by default the server puts
+            back pressure on the client connection. Instead, the server can send an OverloadedException error message back to
+            the client if this option is set to true.
 
 
 4.1.2. AUTH_RESPONSE
@@ -1068,6 +1071,12 @@ Table of Contents
                              - "BATCH_LOG": the timeout occurred during the
                                write to the batch log when a (logged) batch
                                write was requested.
+                             - "CAS": the timeout occured during the Compare And Set write/update.
+                             - "VIEW": the timeout occured when a write involves
+                                VIEW update and failure to acqiure local view(MV)
+                                lock for key within timeout
+                             - "CDC": the timeout occured when cdc_total_space_in_mb is
+                                exceeded when doing a write to data tracked by cdc.
     0x1200    Read_timeout: Timeout exception during a read request. The rest
               of the ERROR message body will be
                 <cl><received><blockfor><data_present>
@@ -1135,6 +1144,12 @@ Table of Contents
                              - "BATCH_LOG": the failure occured during the
                                write to the batch log when a (logged) batch
                                write was requested.
+                             - "CAS": the failure occured during the Compare And Set write/update.
+                             - "VIEW": the failure occured when a write involves
+                                VIEW update and failure to acqiure local view(MV)
+                                lock for key within timeout
+                             - "CDC": the failure occured when cdc_total_space_in_mb is
+                                exceeded when doing a write to data tracked by cdc.
 
     0x2000    Syntax_error: The submitted query has a syntax error.
     0x2100    Unauthorized: The logged user doesn't have the right to perform
@@ -1173,3 +1188,4 @@ Table of Contents
   * The <paging_state> returned in the v4 protocol is not compatible with the v3
     protocol. In other words, a <paging_state> returned by a node using protocol v4
     should not be used to query a node using protocol v3 (and vice-versa).
+  * Added THROW_ON_OVERLOAD startup option (Section 4.1.1).

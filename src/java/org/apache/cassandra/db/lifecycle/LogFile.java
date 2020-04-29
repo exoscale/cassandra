@@ -162,7 +162,21 @@ final class LogFile implements AutoCloseable
             return false;
         }
 
-        records.forEach(LogFile::verifyRecord);
+        Set<String> absolutePaths = new HashSet<>();
+        for (LogRecord record : records)
+            record.absolutePath.ifPresent(absolutePaths::add);
+
+        Map<String, List<File>> recordFiles = LogRecord.getExistingFiles(absolutePaths);
+        for (LogRecord record : records)
+        {
+            List<File> existingFiles = Collections.emptyList();
+            if (record.absolutePath.isPresent())
+            {
+                String key = record.absolutePath.get();
+                existingFiles = recordFiles.getOrDefault(key, Collections.emptyList());
+            }
+            LogFile.verifyRecord(record, existingFiles);
+        }
 
         Optional<LogRecord> firstInvalid = records.stream().filter(LogRecord::isInvalidOrPartial).findFirst();
         if (!firstInvalid.isPresent())
@@ -200,7 +214,7 @@ final class LogFile implements AutoCloseable
         return record;
     }
 
-    static void verifyRecord(LogRecord record)
+    static void verifyRecord(LogRecord record, List<File> existingFiles)
     {
         if (record.checksum != record.computeChecksum())
         {
@@ -220,7 +234,7 @@ final class LogFile implements AutoCloseable
         // file that obsoleted the very same files. So we check the latest update time and make sure
         // it matches. Because we delete files from oldest to newest, the latest update time should
         // always match.
-        record.status.onDiskRecord = record.withExistingFiles();
+        record.status.onDiskRecord = record.withExistingFiles(existingFiles);
         if (record.updateTime != record.status.onDiskRecord.updateTime && record.status.onDiskRecord.updateTime > 0)
         {
             record.setError(String.format("Unexpected files detected for sstable [%s]: " +
@@ -247,13 +261,11 @@ final class LogFile implements AutoCloseable
 
     void commit()
     {
-        assert !completed() : "Already completed!";
         addRecord(LogRecord.makeCommit(System.currentTimeMillis()));
     }
 
     void abort()
     {
-        assert !completed() : "Already completed!";
         addRecord(LogRecord.makeAbort(System.currentTimeMillis()));
     }
 
@@ -280,20 +292,18 @@ final class LogFile implements AutoCloseable
         return committed() || aborted();
     }
 
-    void add(Type type, SSTable table)
+    void add(SSTable table)
     {
-        if (!addRecord(makeRecord(type, table)))
-            throw new IllegalStateException();
+        addRecord(makeAddRecord(table));
     }
 
     public void addAll(Type type, Iterable<SSTableReader> toBulkAdd)
     {
-        for (LogRecord record : makeRecords(type, toBulkAdd))
-            if (!addRecord(record))
-                throw new IllegalStateException();
+        for (LogRecord record : makeRecords(type, toBulkAdd).values())
+            addRecord(record);
     }
 
-    private Collection<LogRecord> makeRecords(Type type, Iterable<SSTableReader> tables)
+    Map<SSTable, LogRecord> makeRecords(Type type, Iterable<SSTableReader> tables)
     {
         assert type == Type.ADD || type == Type.REMOVE;
 
@@ -306,57 +316,88 @@ final class LogFile implements AutoCloseable
         return LogRecord.make(type, tables);
     }
 
-    private LogRecord makeRecord(Type type, SSTable table)
+    private LogRecord makeAddRecord(SSTable table)
+    {
+        File directory = table.descriptor.directory;
+        String fileName = StringUtils.join(directory, File.separator, getFileName());
+        replicas.maybeCreateReplica(directory, fileName, records);
+        return LogRecord.make(Type.ADD, table);
+    }
+
+    /**
+     * this version of makeRecord takes an existing LogRecord and converts it to a
+     * record with the given type. This avoids listing the directory and if the
+     * LogRecord already exists, we have all components for the sstable
+     */
+    private LogRecord makeRecord(Type type, SSTable table, LogRecord record)
     {
         assert type == Type.ADD || type == Type.REMOVE;
 
         File directory = table.descriptor.directory;
         String fileName = StringUtils.join(directory, File.separator, getFileName());
         replicas.maybeCreateReplica(directory, fileName, records);
-        return LogRecord.make(type, table);
+        return record.asType(type);
     }
 
-    private boolean addRecord(LogRecord record)
+    void addRecord(LogRecord record)
     {
+        if (completed())
+            throw new IllegalStateException("Transaction already completed");
+
         if (records.contains(record))
-            return false;
+            throw new IllegalStateException("Record already exists");
 
         replicas.append(record);
-
-        return records.add(record);
+        if (!records.add(record))
+            throw new IllegalStateException("Failed to add record");
     }
 
-    void remove(Type type, SSTable table)
+    void remove(SSTable table)
     {
-        LogRecord record = makeRecord(type, table);
+        LogRecord record = makeAddRecord(table);
         assert records.contains(record) : String.format("[%s] is not tracked by %s", record, id);
-
-        deleteRecordFiles(record);
+        assert record.absolutePath.isPresent();
+        deleteRecordFiles(LogRecord.getExistingFiles(record.absolutePath.get()));
         records.remove(record);
     }
 
-    boolean contains(Type type, SSTable table)
+    boolean contains(Type type, SSTable sstable, LogRecord record)
     {
-        return records.contains(makeRecord(type, table));
+        return contains(makeRecord(type, sstable, record));
+    }
+
+    private boolean contains(LogRecord record)
+    {
+        return records.contains(record);
     }
 
     void deleteFilesForRecordsOfType(Type type)
     {
-        records.stream()
-               .filter(type::matches)
-               .forEach(LogFile::deleteRecordFiles);
+        assert type == Type.REMOVE || type == Type.ADD;
+        Set<String> absolutePaths = new HashSet<>();
+        for (LogRecord record : records)
+        {
+            if (type.matches(record))
+            {
+                assert record.absolutePath.isPresent() : "type is either REMOVE or ADD, record should always have an absolutePath: " + record;
+                absolutePaths.add(record.absolutePath.get());
+            }
+        }
+
+        Map<String, List<File>> existingFiles = LogRecord.getExistingFiles(absolutePaths);
+
+        for (List<File> toDelete : existingFiles.values())
+            LogFile.deleteRecordFiles(toDelete);
+
         records.clear();
     }
 
-    private static void deleteRecordFiles(LogRecord record)
+    private static void deleteRecordFiles(List<File> existingFiles)
     {
-        List<File> files = record.getExistingFiles();
-
         // we sort the files in ascending update time order so that the last update time
         // stays the same even if we only partially delete files, see comment in isInvalid()
-        files.sort((f1, f2) -> Long.compare(f1.lastModified(), f2.lastModified()));
-
-        files.forEach(LogTransaction::delete);
+        existingFiles.sort(Comparator.comparingLong(File::lastModified));
+        existingFiles.forEach(LogTransaction::delete);
     }
 
     /**

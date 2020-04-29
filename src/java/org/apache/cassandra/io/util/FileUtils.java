@@ -48,6 +48,7 @@ import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
+import static com.google.common.base.Throwables.propagate;
 import static org.apache.cassandra.utils.Throwables.maybeFail;
 import static org.apache.cassandra.utils.Throwables.merge;
 
@@ -258,7 +259,7 @@ public final class FileUtils
 
     public static void close(Iterable<? extends Closeable> cs) throws IOException
     {
-        IOException e = null;
+        Throwable e = null;
         for (Closeable c : cs)
         {
             try
@@ -266,14 +267,14 @@ public final class FileUtils
                 if (c != null)
                     c.close();
             }
-            catch (IOException ex)
+            catch (Throwable ex)
             {
-                e = ex;
+                if (e == null) e = ex;
+                else e.addSuppressed(ex);
                 logger.warn("Failed closing stream {}", c, ex);
             }
         }
-        if (e != null)
-            throw e;
+        maybeFail(e, IOException.class);
     }
 
     public static void closeQuietly(Iterable<? extends AutoCloseable> cs)
@@ -319,8 +320,8 @@ public final class FileUtils
     /** Return true if file is contained in folder */
     public static boolean isContained(File folder, File file)
     {
-        String folderPath = getCanonicalPath(folder);
-        String filePath = getCanonicalPath(file);
+        Path folderPath = Paths.get(getCanonicalPath(folder));
+        Path filePath = Paths.get(getCanonicalPath(file));
 
         return filePath.startsWith(folderPath);
     }
@@ -491,6 +492,20 @@ public final class FileUtils
     public static void handleFSError(FSError e)
     {
         fsErrorHandler.get().ifPresent(handler -> handler.handleFSError(e));
+    }
+
+    /**
+     * handleFSErrorAndPropagate will invoke the disk failure policy error handler,
+     * which may or may not stop the daemon or transports. However, if we don't exit,
+     * we still want to propagate the exception to the caller in case they have custom
+     * exception handling
+     *
+     * @param e A filesystem error
+     */
+    public static void handleFSErrorAndPropagate(FSError e)
+    {
+        handleFSError(e);
+        throw propagate(e);
     }
 
     /**

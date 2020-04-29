@@ -18,16 +18,12 @@
 package org.apache.cassandra.service;
 
 import java.io.IOException;
-import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
 
 import com.google.common.base.Predicate;
 import com.google.common.cache.CacheLoader;
@@ -114,16 +110,7 @@ public class StorageProxy implements StorageProxyMBean
 
     static
     {
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-        try
-        {
-            mbs.registerMBean(instance, new ObjectName(MBEAN_NAME));
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
-        }
-
+        MBeanWrapper.instance.registerMBean(instance, MBEAN_NAME);
         HintsService.instance.registerMBean();
         HintedHandOffManager.instance.registerMBean();
 
@@ -522,7 +509,7 @@ public class StorageProxy implements StorageProxyMBean
         return false;
     }
 
-    private static void commitPaxos(Commit proposal, ConsistencyLevel consistencyLevel, boolean shouldHint, long queryStartNanoTime) throws WriteTimeoutException
+    private static void commitPaxos(Commit proposal, ConsistencyLevel consistencyLevel, boolean allowHints, long queryStartNanoTime) throws WriteTimeoutException
     {
         boolean shouldBlock = consistencyLevel != ConsistencyLevel.ANY;
         Keyspace keyspace = Keyspace.open(proposal.update.metadata().ksName);
@@ -551,14 +538,14 @@ public class StorageProxy implements StorageProxyMBean
                     if (canDoLocalRequest(destination))
                         commitPaxosLocal(message, responseHandler);
                     else
-                        MessagingService.instance().sendRR(message, destination, responseHandler, shouldHint);
+                        MessagingService.instance().sendRR(message, destination, responseHandler, allowHints && shouldHint(destination));
                 }
                 else
                 {
                     MessagingService.instance().sendOneWay(message, destination);
                 }
             }
-            else if (shouldHint)
+            else if (allowHints && shouldHint(destination))
             {
                 submitHint(proposal.makeMutation(), destination, null);
             }
@@ -795,8 +782,11 @@ public class StorageProxy implements StorageProxyMBean
                         continue;
                     }
 
-                    // When local node is the paired endpoint just apply the mutation locally.
-                    if (pairedEndpoint.get().equals(FBUtilities.getBroadcastAddress()) && StorageService.instance.isJoined())
+                    // When local node is the endpoint we can just apply the mutation locally,
+                    // unless there are pending endpoints, in which case we want to do an ordinary
+                    // write so the view mutation is sent to the pending endpoint
+                    if (pairedEndpoint.get().equals(FBUtilities.getBroadcastAddress()) && StorageService.instance.isJoined()
+                        && pendingEndpoints.isEmpty())
                     {
                         try
                         {

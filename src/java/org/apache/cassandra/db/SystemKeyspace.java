@@ -42,8 +42,6 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.util.concurrent.Futures;
 
-import org.apache.cassandra.concurrent.Stage;
-import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.SchemaConstants;
@@ -759,6 +757,18 @@ public final class SystemKeyspace
         return executorService.submit((Runnable) () -> executeInternal(String.format(req, PEERS, columnName), ep, value));
     }
 
+    public static void updatePeerReleaseVersion(final InetAddress ep, final Object value, Runnable postUpdateTask, ExecutorService executorService)
+    {
+        if (ep.equals(FBUtilities.getBroadcastAddress()))
+            return;
+
+        String req = "INSERT INTO system.%s (peer, release_version) VALUES (?, ?)";
+        executorService.execute(() -> {
+            executeInternal(String.format(req, PEERS), ep, value);
+            postUpdateTask.run();
+        });
+    }
+
     public static synchronized void updateHintsDropped(InetAddress ep, UUID timePeriod, int value)
     {
         // with 30 day TTL
@@ -852,6 +862,37 @@ public final class SystemKeyspace
             }
         }
         return hostIdMap;
+    }
+
+    /**
+     * Return a map of IP address to C* version. If an invalid version string, or no version
+     * at all is stored for a given peer IP, then NULL_VERSION will be reported for that peer
+     */
+    public static Map<InetAddress, CassandraVersion> loadPeerVersions()
+    {
+        Map<InetAddress, CassandraVersion> releaseVersionMap = new HashMap<>();
+        for (UntypedResultSet.Row row : executeInternal("SELECT peer, release_version FROM system." + PEERS))
+        {
+            InetAddress peer = row.getInetAddress("peer");
+            if (row.has("release_version"))
+            {
+                try
+                {
+                    releaseVersionMap.put(peer, new CassandraVersion(row.getString("release_version")));
+                }
+                catch (IllegalArgumentException e)
+                {
+                    logger.info("Invalid version string found for {}", peer);
+                    releaseVersionMap.put(peer, NULL_VERSION);
+                }
+            }
+            else
+            {
+                logger.info("No version string found for {}", peer);
+                releaseVersionMap.put(peer, NULL_VERSION);
+            }
+        }
+        return releaseVersionMap;
     }
 
     /**
@@ -1279,6 +1320,32 @@ public final class SystemKeyspace
         executeInternal(cql, keyspace, table);
     }
 
+    /**
+     * Clears size estimates for a keyspace (used to manually clean when we miss a keyspace drop)
+     */
+    public static void clearSizeEstimates(String keyspace)
+    {
+        String cql = String.format("DELETE FROM %s.%s WHERE keyspace_name = ?", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
+        executeInternal(cql, keyspace);
+    }
+
+    /**
+     * @return A multimap from keyspace to table for all tables with entries in size estimates
+     */
+
+    public static synchronized SetMultimap<String, String> getTablesWithSizeEstimates()
+    {
+        SetMultimap<String, String> keyspaceTableMap = HashMultimap.create();
+        String cql = String.format("SELECT keyspace_name, table_name FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
+        UntypedResultSet rs = executeInternal(cql);
+        for (UntypedResultSet.Row row : rs)
+        {
+            keyspaceTableMap.put(row.getString("keyspace_name"), row.getString("table_name"));
+        }
+
+        return keyspaceTableMap;
+    }
+
     public static synchronized void updateAvailableRanges(String keyspace, Collection<Range<Token>> completedRanges)
     {
         String cql = "UPDATE system.%s SET ranges = ranges + ? WHERE keyspace_name = ?";
@@ -1356,6 +1423,8 @@ public final class SystemKeyspace
     {
         String previous = getPreviousVersionString();
         String next = FBUtilities.getReleaseVersionString();
+
+        FBUtilities.setPreviousReleaseVersionString(previous);
 
         // if we're restarting after an upgrade, snapshot the system keyspace
         if (!previous.equals(NULL_VERSION.toString()) && !previous.equals(next))

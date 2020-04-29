@@ -28,7 +28,6 @@ import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.CollectionType;
 import org.apache.cassandra.db.view.View;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.schema.IndexMetadata;
@@ -135,10 +134,6 @@ public class AlterTableStatement extends SchemaAlteringStatement
                         }
                     }
 
-                    // Cannot re-add a dropped counter column. See #7831.
-                    if (meta.isCounter() && meta.getDroppedColumns().containsKey(columnName.bytes))
-                        throw new InvalidRequestException(String.format("Cannot re-add previously dropped counter column %s", columnName));
-
                     AbstractType<?> type = validator.getType();
                     if (type.isCollection() && type.isMultiCell())
                     {
@@ -146,29 +141,44 @@ public class AlterTableStatement extends SchemaAlteringStatement
                             throw new InvalidRequestException("Cannot use non-frozen collections in COMPACT STORAGE tables");
                         if (cfm.isSuper())
                             throw new InvalidRequestException("Cannot use non-frozen collections with super column families");
-
-                        // If there used to be a non-frozen collection column with the same name (that has been dropped),
-                        // we could still have some data using the old type, and so we can't allow adding a collection
-                        // with the same name unless the types are compatible (see #6276).
-                        CFMetaData.DroppedColumn dropped = cfm.getDroppedColumns().get(columnName.bytes);
-                        if (dropped != null && dropped.type instanceof CollectionType
-                            && dropped.type.isMultiCell() && !type.isCompatibleWith(dropped.type))
-                        {
-                            String message =
-                                String.format("Cannot add a collection with the name %s because a collection with the same name"
-                                              + " and a different type (%s) has already been used in the past",
-                                              columnName,
-                                              dropped.type.asCQL3Type());
-                            throw new InvalidRequestException(message);
-                        }
                     }
 
-                    cfm.addColumnDefinition(isStatic
-                                            ? ColumnDefinition.staticDef(cfm, columnName.bytes, type)
-                                            : ColumnDefinition.regularDef(cfm, columnName.bytes, type));
+                    ColumnDefinition toAdd = isStatic
+                                           ? ColumnDefinition.staticDef(cfm, columnName.bytes, type)
+                                           : ColumnDefinition.regularDef(cfm, columnName.bytes, type);
 
-                    // Adding a column to a table which has an include all view requires the column to be added to the view
-                    // as well
+                    CFMetaData.DroppedColumn droppedColumn = meta.getDroppedColumns().get(columnName.bytes);
+                    if (null != droppedColumn)
+                    {
+                        if (droppedColumn.kind != toAdd.kind)
+                        {
+                            String message =
+                                String.format("Cannot re-add previously dropped column '%s' of kind %s, incompatible with previous kind %s",
+                                              columnName,
+                                              toAdd.kind,
+                                              droppedColumn.kind == null ? "UNKNOWN" : droppedColumn.kind);
+                            throw new InvalidRequestException(message);
+                        }
+                        // After #8099, not safe to re-add columns of incompatible types - until *maybe* deser logic with dropped
+                        // columns is pushed deeper down the line. The latter would still be problematic in cases of schema races.
+                        if (!type.isValueCompatibleWith(droppedColumn.type))
+                        {
+                            String message =
+                                String.format("Cannot re-add previously dropped column '%s' of type %s, incompatible with previous type %s",
+                                              columnName,
+                                              type.asCQL3Type(),
+                                              droppedColumn.type.asCQL3Type());
+                            throw new InvalidRequestException(message);
+                        }
+
+                        // Cannot re-add a dropped counter column. See #7831.
+                        if (meta.isCounter())
+                            throw new InvalidRequestException(String.format("Cannot re-add previously dropped counter column %s", columnName));
+                    }
+
+                    cfm.addColumnDefinition(toAdd);
+
+                    // Adding a column to a table which has an include all view requires the column to be added to the view as well
                     if (!isStatic)
                     {
                         for (ViewDefinition view : views)
